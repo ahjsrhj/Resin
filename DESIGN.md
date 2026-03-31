@@ -1781,6 +1781,32 @@ Query（可选）：
 说明：以下接口不使用 `Authorization: Bearer` 控制面鉴权，而是通过路径中的 `proxy_token` 鉴权。  
 当 `RESIN_PROXY_TOKEN` 为空时，该接口仍可用：`proxy_token` 路径段不做值校验（例如 `/any-dummy-token/api/v1/...` 或 `//api/v1/...` 都可命中该接口）。
 
+#### 获取粘性正向代理 URL
+
+**GET** `/{proxy_token}/api/v1/{platform_name}/get-proxy`
+
+用途：为业务侧动态生成一个可直接使用的正向代理 URL。每次调用都会生成一个新的 6 位数字+字母伪账号；该接口本身不预创建租约，真正的粘性租约仍在首次实际代理请求发生时建立。
+
+返回：
+
+```json
+{
+  "proxy_url": "http://Default.a1B2c3:my-token@127.0.0.1:2260"
+}
+```
+
+组装规则：
+
+* 代理用户名固定为 `{platform_name}.{random_user}`，其中 `random_user` 为 6 位数字+字母字符串。
+* 当 `RESIN_PROXY_TOKEN` 非空时，返回 `http://{platform}.{user}:{password}@{host}:{port}`。
+* 当 `RESIN_PROXY_TOKEN` 为空时，返回无密码版本：`http://{platform}.{user}@{host}:{port}`。
+* `{host}:{port}` 优先取当前请求的 `Host`；若 `Host` 未显式带端口，则复用 `RESIN_PORT`；若 `Host` 为空，则回退到 `RESIN_LISTEN_ADDRESS + RESIN_PORT`。
+
+错误码映射（最小集）：
+
+* `400 INVALID_ARGUMENT`：`platform_name` trim 后为空。
+* `404 NOT_FOUND`：平台不存在。
+
 #### 继承租约（Action）
 
 **POST** `/{proxy_token}/api/v1/{platform_name}/actions/inherit-lease`

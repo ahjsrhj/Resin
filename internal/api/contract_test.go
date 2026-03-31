@@ -91,6 +91,8 @@ func newControlPlaneTestServerWithBodyLimit(
 		MatcherRuntime: proxy.NewAccountMatcherRuntime(nil),
 		RuntimeCfg:     runtimeCfg,
 		EnvCfg: &config.EnvConfig{
+			ListenAddress:                                   "127.0.0.1",
+			ResinPort:                                       2260,
 			DefaultPlatformStickyTTL:                        30 * time.Minute,
 			DefaultPlatformRegexFilters:                     []string{},
 			DefaultPlatformRegionFilters:                    []string{},

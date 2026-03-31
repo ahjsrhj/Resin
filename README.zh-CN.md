@@ -177,6 +177,22 @@ curl -x http://127.0.0.1:2260 \
   https://api.ipify.org
 ```
 
+如果你的客户端更适合直接接收一个完整的 HTTP 代理 URL，也可以先调用 Resin 的数据面 API 动态生成一个带随机伪账号的粘性代理地址：
+
+```bash
+curl "http://127.0.0.1:2260/my-token/api/v1/Default/get-proxy"
+```
+
+返回示例：
+
+```json
+{
+  "proxy_url": "http://Default.a1B2c3:my-token@127.0.0.1:2260"
+}
+```
+
+其中 `a1B2c3` 是 Resin 临时生成的 6 位数字+字母伪账号。每次调用该接口都会生成一个新的伪账号，可直接把返回的 `proxy_url` 填给只支持“完整代理 URL”配置方式的客户端。
+
 #### 方式二：反向代理接入（URL 携带 Account，适合简单使用/手动调试）
 你可以通过替换业务的 BaseURL 为 Resin 反代地址，将请求直接发给 Resin。
 URL 格式进阶为：`http://部署IP:2260/密码/平台.账号/协议/目标地址`：
@@ -242,6 +258,7 @@ curl "http://127.0.0.1:2260/my-token/MyPlatform/https/api.example.com/v1/orders"
 | 接入方式 | 代码侵入程度 | 说明 |
 | :--- | :--- | :--- |
 | 接入正向代理 | 🟡 **中侵入** | 需稍微修改代码：为不同用户附带不同认证信息（V1 例如 `平台.账号:密码`）。 |
+| 先调用 `get-proxy` 再接入正向代理 | 🟢 **零/低侵入** | 先请求 `GET /{proxy_token}/api/v1/{platform}/get-proxy`，拿到完整 `proxy_url` 后直接交给客户端使用；重复调用会生成新的伪账号。 |
 | 接入反向代理 | 🟡 **中侵入** | 需稍微修改代码：加入 `X-Resin-Account` 请求头或动态拼接带有账号的反代 URL 路径。 |
 | 接入反向代理 + 请求头规则 | 🟢 **零/低侵入** | Resin 允许通过识别业务原始头（如 `Authorization`）自动提取 Account 并进行粘性路由绑定，接入方式与非粘性反代接近。 |
 
