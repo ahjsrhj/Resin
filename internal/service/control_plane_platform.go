@@ -727,9 +727,6 @@ func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSum
 			if s.GeoIP != nil {
 				region = entry.GetRegion(s.GeoIP.Lookup)
 			}
-			if region == "" {
-				return true
-			}
 			if !platform.MatchRegionFilter(region, regionFilters) {
 				return true
 			}

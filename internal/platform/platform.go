@@ -152,8 +152,16 @@ func (p *Platform) evaluateNode(
 
 // MatchRegionFilter applies include/exclude region filters.
 // Positive entries (xx) build an include set; negative entries (!xx) build an exclude set.
-// Final result is: (include empty OR region in include) AND (region not in exclude).
+// Unknown regions never match when region filters are configured.
+// Final result is: region known AND (include empty OR region in include) AND (region not in exclude).
 func MatchRegionFilter(region string, filters []string) bool {
+	if len(filters) == 0 {
+		return true
+	}
+	if region == "" {
+		return false
+	}
+
 	included := false
 	hasInclude := false
 
