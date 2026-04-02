@@ -684,13 +684,13 @@ func TestGetSubscription_HealthyNodeCount_ExcludesDisabledSubscriptionNodes(t *t
 		MaxConsecutiveFailures: func() int { return 3 },
 	})
 
-	sub := subscription.NewSubscription("sub-disabled", "sub-disabled", "https://example.com/sub", false, false)
+	sub := subscription.NewSubscription("sub-disabled", "sub-disabled", "https://example.com/sub", true, false)
 	subMgr.Register(sub)
 
 	raw := []byte(`{"type":"ss","server":"1.1.1.1","port":443}`)
 	hash := node.HashFromRawOptions(raw)
 	pool.AddNodeFromSub(hash, raw, sub.ID)
-	sub.ManagedNodes().StoreNode(hash, subscription.ManagedNode{Tags: []string{"tag-a"}})
+	sub.ManagedNodes().StoreNode(hash, subscription.ManagedNode{Tags: []string{"tag-a"}, Disabled: true})
 
 	entry, ok := pool.GetEntry(hash)
 	if !ok {

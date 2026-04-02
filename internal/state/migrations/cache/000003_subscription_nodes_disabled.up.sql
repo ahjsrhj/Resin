@@ -1,0 +1,2 @@
+ALTER TABLE subscription_nodes
+ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0;

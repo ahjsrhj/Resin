@@ -485,6 +485,165 @@ func TestListNodes_EnabledFilter(t *testing.T) {
 	}
 }
 
+func TestListNodes_SubscriptionNodeEnabledFilter(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	pool := newNodeListTestPool(subMgr)
+
+	sub := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	subMgr.Register(sub)
+
+	enabledHash := addRoutableNodeForSubscriptionWithTag(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"ss","server":"1.1.1.1","port":443}`),
+		"203.0.113.80",
+		"enabled",
+	)
+	disabledHash := addRoutableNodeForSubscriptionWithTag(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"ss","server":"2.2.2.2","port":443}`),
+		"203.0.113.81",
+		"disabled",
+	)
+	managed, ok := sub.ManagedNodes().LoadNode(disabledHash)
+	if !ok {
+		t.Fatal("disabled managed node missing")
+	}
+	managed.Disabled = true
+	sub.ManagedNodes().StoreNode(disabledHash, managed)
+
+	cp := &ControlPlaneService{
+		Pool:   pool,
+		SubMgr: subMgr,
+		GeoIP:  &geoip.Service{},
+	}
+
+	enabled := true
+	nodes, err := cp.ListNodes(NodeFilters{
+		SubscriptionID:          &sub.ID,
+		SubscriptionNodeEnabled: &enabled,
+	})
+	if err != nil {
+		t.Fatalf("ListNodes(subscription_node_enabled=true): %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].NodeHash != enabledHash.Hex() {
+		t.Fatalf("subscription_node_enabled=true result = %+v, want [%s]", nodes, enabledHash.Hex())
+	}
+
+	disabled := false
+	nodes, err = cp.ListNodes(NodeFilters{
+		SubscriptionID:          &sub.ID,
+		SubscriptionNodeEnabled: &disabled,
+	})
+	if err != nil {
+		t.Fatalf("ListNodes(subscription_node_enabled=false): %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].NodeHash != disabledHash.Hex() {
+		t.Fatalf("subscription_node_enabled=false result = %+v, want [%s]", nodes, disabledHash.Hex())
+	}
+}
+
+func TestSetSubscriptionNodeDisabled_TogglesBindingAndGlobalState(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	pool := newNodeListTestPool(subMgr)
+
+	subA := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	subB := subscription.NewSubscription("sub-b", "sub-b", "https://example.com/b", true, false)
+	subMgr.Register(subA)
+	subMgr.Register(subB)
+
+	raw := []byte(`{"type":"ss","server":"4.4.4.4","port":443}`)
+	hash := addRoutableNodeForSubscriptionWithTag(t, pool, subA, raw, "203.0.113.82", "a-tag")
+	pool.AddNodeFromSub(hash, raw, subB.ID)
+	subB.ManagedNodes().StoreNode(hash, subscription.ManagedNode{Tags: []string{"b-tag"}})
+
+	cp := &ControlPlaneService{
+		Pool:   pool,
+		SubMgr: subMgr,
+		GeoIP:  &geoip.Service{},
+	}
+
+	if err := cp.SetSubscriptionNodeDisabled(subA.ID, hash.Hex(), true); err != nil {
+		t.Fatalf("disable subA binding: %v", err)
+	}
+	if pool.IsNodeDisabled(hash) {
+		t.Fatal("node should remain globally enabled while subB binding is active")
+	}
+
+	summary, err := cp.GetNode(hash.Hex())
+	if err != nil {
+		t.Fatalf("GetNode after disable: %v", err)
+	}
+	tagStates := map[string]NodeTag{}
+	for _, tag := range summary.Tags {
+		tagStates[tag.SubscriptionID] = tag
+	}
+	if !tagStates[subA.ID].Disabled || tagStates[subA.ID].SubscriptionEnabled {
+		t.Fatalf("subA tag state mismatch: %+v", tagStates[subA.ID])
+	}
+	if tagStates[subB.ID].Disabled || !tagStates[subB.ID].SubscriptionEnabled {
+		t.Fatalf("subB tag state mismatch: %+v", tagStates[subB.ID])
+	}
+
+	if err := cp.SetSubscriptionNodeDisabled(subB.ID, hash.Hex(), true); err != nil {
+		t.Fatalf("disable subB binding: %v", err)
+	}
+	if !pool.IsNodeDisabled(hash) {
+		t.Fatal("node should become globally disabled when all bindings are disabled")
+	}
+
+	if err := cp.SetSubscriptionNodeDisabled(subA.ID, hash.Hex(), false); err != nil {
+		t.Fatalf("re-enable subA binding: %v", err)
+	}
+	if pool.IsNodeDisabled(hash) {
+		t.Fatal("node should recover once one binding is re-enabled")
+	}
+}
+
+func TestSetSubscriptionNodeDisabled_Errors(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	pool := newNodeListTestPool(subMgr)
+
+	sub := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	subMgr.Register(sub)
+
+	raw := []byte(`{"type":"ss","server":"5.5.5.5","port":443}`)
+	hash := addRoutableNodeForSubscriptionWithTag(t, pool, sub, raw, "203.0.113.83", "tag")
+
+	cp := &ControlPlaneService{
+		Pool:   pool,
+		SubMgr: subMgr,
+		GeoIP:  &geoip.Service{},
+	}
+
+	if err := cp.SetSubscriptionNodeDisabled(sub.ID, "not-hex", true); err == nil {
+		t.Fatal("invalid hash should fail")
+	}
+	if err := cp.SetSubscriptionNodeDisabled("missing-sub", hash.Hex(), true); err == nil {
+		t.Fatal("missing subscription should fail")
+	}
+
+	missingHash := node.HashFromRawOptions([]byte(`{"type":"ss","server":"6.6.6.6","port":443}`))
+	if err := cp.SetSubscriptionNodeDisabled(sub.ID, missingHash.Hex(), true); err == nil {
+		t.Fatal("missing subscription node should fail")
+	}
+
+	managed, ok := sub.ManagedNodes().LoadNode(hash)
+	if !ok {
+		t.Fatal("managed node missing")
+	}
+	managed.Evicted = true
+	sub.ManagedNodes().StoreNode(hash, managed)
+	pool.RemoveNodeFromSub(hash, sub.ID)
+
+	if err := cp.SetSubscriptionNodeDisabled(sub.ID, hash.Hex(), true); err == nil {
+		t.Fatal("evicted subscription node should fail")
+	}
+}
+
 func TestProbeEgress_ReturnsRegion(t *testing.T) {
 	subMgr := topology.NewSubscriptionManager()
 	pool := newNodeListTestPool(subMgr)

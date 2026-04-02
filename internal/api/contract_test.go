@@ -1211,6 +1211,22 @@ func TestAPIContract_ModuleAndActionEndpoints(t *testing.T) {
 	}
 	assertErrorCode(t, rec, "INVALID_ARGUMENT")
 
+	rec = doJSONRequest(t, srv, http.MethodPost, "/api/v1/subscriptions/not-a-uuid/nodes/not-hex/actions/set-disabled", map[string]any{
+		"disabled": true,
+	}, true)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("set-disabled invalid subscription id status: got %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	assertErrorCode(t, rec, "INVALID_ARGUMENT")
+
+	rec = doJSONRequest(t, srv, http.MethodPost, "/api/v1/subscriptions/11111111-1111-1111-1111-111111111111/nodes/not-hex/actions/set-disabled", map[string]any{
+		"disabled": true,
+	}, true)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("set-disabled invalid hash status: got %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	assertErrorCode(t, rec, "INVALID_ARGUMENT")
+
 	// account header rules
 	rec = doJSONRequest(t, srv, http.MethodPut, "/api/v1/account-header-rules/api.example.com%2Fv1", map[string]any{
 		"headers": []string{"Authorization"},
@@ -1259,6 +1275,12 @@ func TestAPIContract_ModuleAndActionEndpoints(t *testing.T) {
 	rec = doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes?subscription_id=not-a-uuid", nil, true)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("nodes invalid subscription_id status: got %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	assertErrorCode(t, rec, "INVALID_ARGUMENT")
+
+	rec = doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes?subscription_node_enabled=true", nil, true)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("nodes subscription_node_enabled without subscription_id status: got %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 	assertErrorCode(t, rec, "INVALID_ARGUMENT")
 

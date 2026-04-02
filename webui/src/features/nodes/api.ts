@@ -3,14 +3,16 @@ import type {
   EgressProbeResult,
   LatencyProbeResult,
   NodeListQuery,
+  NodeTag,
   NodeSummary,
   PageResponse,
+  SetSubscriptionNodeDisabledInput,
 } from "./types";
 
 const basePath = "/api/v1/nodes";
 
 type ApiNodeSummary = Omit<NodeSummary, "tags"> & {
-  tags?: NodeSummary["tags"] | null;
+  tags?: Array<Partial<NodeTag>> | null;
   enabled?: boolean | null;
   display_tag?: string | null;
   last_error?: string | null;
@@ -24,13 +26,23 @@ type ApiNodeSummary = Omit<NodeSummary, "tags"> & {
   last_egress_update_attempt?: string | null;
 };
 
+function normalizeNodeTag(raw: Partial<NodeTag>): NodeTag {
+  return {
+    subscription_id: raw.subscription_id || "",
+    subscription_name: raw.subscription_name || "",
+    tag: raw.tag || "",
+    disabled: raw.disabled === true,
+    subscription_enabled: raw.subscription_enabled !== false,
+  };
+}
+
 function normalizeNode(raw: ApiNodeSummary): NodeSummary {
   const { reference_latency_ms, ...rest } = raw;
   const normalized: NodeSummary = {
     ...rest,
     enabled: raw.enabled !== false,
     display_tag: raw.display_tag || "",
-    tags: Array.isArray(raw.tags) ? raw.tags : [],
+    tags: Array.isArray(raw.tags) ? raw.tags.map(normalizeNodeTag) : [],
     last_error: raw.last_error || "",
     circuit_open_since: raw.circuit_open_since || "",
     egress_ip: raw.egress_ip || "",
@@ -84,6 +96,9 @@ export async function listNodes(filters: NodeListQuery): Promise<PageResponse<No
   if (filters.enabled !== undefined) {
     query.set("enabled", String(filters.enabled));
   }
+  if (filters.subscription_node_enabled !== undefined) {
+    query.set("subscription_node_enabled", String(filters.subscription_node_enabled));
+  }
 
   const data = await apiRequest<PageResponse<ApiNodeSummary>>(`${basePath}?${query.toString()}`);
   return {
@@ -107,4 +122,14 @@ export async function probeLatency(hash: string): Promise<LatencyProbeResult> {
   return apiRequest<LatencyProbeResult>(`${basePath}/${hash}/actions/probe-latency`, {
     method: "POST",
   });
+}
+
+export async function setSubscriptionNodeDisabled(input: SetSubscriptionNodeDisabledInput): Promise<void> {
+  await apiRequest<{ status: "ok" }>(
+    `/api/v1/subscriptions/${input.subscription_id}/nodes/${input.node_hash}/actions/set-disabled`,
+    {
+      method: "POST",
+      body: { disabled: input.disabled },
+    }
+  );
 }

@@ -306,7 +306,7 @@ func (p *GlobalNodePool) MakeSubLookup() node.SubLookupFunc {
 			return "", false, nil, false
 		}
 		tags := managed.Tags
-		return sub.Name(), sub.Enabled(), tags, true
+		return sub.Name(), sub.Enabled() && !managed.Disabled, tags, true
 	}
 }
 
@@ -344,12 +344,15 @@ func (p *GlobalNodePool) ResolveNodeDisplayTag(hash node.Hash) string {
 			if sub == nil {
 				continue
 			}
-			if enabledOnly && !sub.Enabled() {
+			if enabledOnly && (!sub.Enabled()) {
 				continue
 			}
 
 			managed, ok := sub.ManagedNodes().LoadNode(hash)
 			if !ok || managed.Evicted {
+				continue
+			}
+			if enabledOnly && managed.Disabled {
 				continue
 			}
 			tags := managed.Tags

@@ -7,6 +7,8 @@ log_dir="${RESIN_LOG_DIR:-/var/log/resin}"
 
 if [ "$#" -eq 0 ]; then
   set -- /usr/local/bin/resin
+elif [ "${1#-}" != "$1" ]; then
+  set -- /usr/local/bin/resin "$@"
 fi
 
 require_writable_dir() {

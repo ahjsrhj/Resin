@@ -575,22 +575,23 @@ type PlatformSpecFilter struct {
 
 // NodeSummary is the API response for a node.
 type NodeSummary struct {
-	NodeHash                         string    `json:"node_hash"`
-	CreatedAt                        string    `json:"created_at"`
-	Enabled                          bool      `json:"enabled"`
-	DisplayTag                       string    `json:"display_tag,omitempty"`
-	HasOutbound                      bool      `json:"has_outbound"`
-	LastError                        string    `json:"last_error,omitempty"`
-	CircuitOpenSince                 *string   `json:"circuit_open_since"`
-	FailureCount                     int       `json:"failure_count"`
-	EgressIP                         string    `json:"egress_ip,omitempty"`
-	Region                           string    `json:"region,omitempty"`
-	LastEgressUpdate                 string    `json:"last_egress_update,omitempty"`
-	LastLatencyProbeAttempt          string    `json:"last_latency_probe_attempt,omitempty"`
-	LastAuthorityLatencyProbeAttempt string    `json:"last_authority_latency_probe_attempt,omitempty"`
-	ReferenceLatencyMs               *float64  `json:"reference_latency_ms,omitempty"`
-	LastEgressUpdateAttempt          string    `json:"last_egress_update_attempt,omitempty"`
-	Tags                             []NodeTag `json:"tags"`
+	NodeHash                         string          `json:"node_hash"`
+	CreatedAt                        string          `json:"created_at"`
+	Enabled                          bool            `json:"enabled"`
+	DisplayTag                       string          `json:"display_tag,omitempty"`
+	HasOutbound                      bool            `json:"has_outbound"`
+	LastError                        string          `json:"last_error,omitempty"`
+	CircuitOpenSince                 *string         `json:"circuit_open_since"`
+	FailureCount                     int             `json:"failure_count"`
+	EgressIP                         string          `json:"egress_ip,omitempty"`
+	Region                           string          `json:"region,omitempty"`
+	LastEgressUpdate                 string          `json:"last_egress_update,omitempty"`
+	LastLatencyProbeAttempt          string          `json:"last_latency_probe_attempt,omitempty"`
+	LastAuthorityLatencyProbeAttempt string          `json:"last_authority_latency_probe_attempt,omitempty"`
+	ReferenceLatencyMs               *float64        `json:"reference_latency_ms,omitempty"`
+	LastEgressUpdateAttempt          string          `json:"last_egress_update_attempt,omitempty"`
+	Tags                             []NodeTag       `json:"tags"`
+	SubscriptionEnabledByID          map[string]bool `json:"-"`
 }
 
 // IsHealthyAndEnabled follows the node-summary health rule used by API/UI
@@ -603,6 +604,8 @@ type NodeTag struct {
 	SubscriptionID          string `json:"subscription_id"`
 	SubscriptionName        string `json:"subscription_name"`
 	Tag                     string `json:"tag"`
+	Disabled                bool   `json:"disabled"`
+	SubscriptionEnabled     bool   `json:"subscription_enabled"`
 	SubscriptionCreatedAtNs int64  `json:"-"`
 }
 
@@ -663,15 +666,21 @@ func (s *ControlPlaneService) nodeEntryToSummary(h node.Hash, entry *node.NodeEn
 			continue
 		}
 		managed, ok := sub.ManagedNodes().LoadNode(h)
-		if !ok {
+		if !ok || managed.Evicted {
 			continue
 		}
+		if ns.SubscriptionEnabledByID == nil {
+			ns.SubscriptionEnabledByID = make(map[string]bool)
+		}
+		ns.SubscriptionEnabledByID[subID] = sub.Enabled() && !managed.Disabled
 		tags := managed.Tags
 		for _, tag := range tags {
 			ns.Tags = append(ns.Tags, NodeTag{
 				SubscriptionID:          subID,
 				SubscriptionName:        sub.Name(),
 				Tag:                     sub.Name() + "/" + tag,
+				Disabled:                managed.Disabled,
+				SubscriptionEnabled:     sub.Enabled() && !managed.Disabled,
 				SubscriptionCreatedAtNs: sub.CreatedAtNs,
 			})
 		}

@@ -61,8 +61,8 @@ func TestRepairConsistency_RemovesOrphans(t *testing.T) {
 		{SubscriptionID: "s1", NodeHash: "valid-node", Tags: []string{}},               // valid
 		{SubscriptionID: "s-missing", NodeHash: "valid-node", Tags: []string{}},        // orphan: sub doesn't exist
 		{SubscriptionID: "s1", NodeHash: "node-missing-from-static", Tags: []string{}}, // orphan: node doesn't exist in static
-		{SubscriptionID: "s1", NodeHash: "evicted-only-node", Tags: []string{"x"}, Evicted: true},
-		{SubscriptionID: "s1", NodeHash: "evicted-missing-static", Tags: []string{"y"}, Evicted: true},
+		{SubscriptionID: "s1", NodeHash: "evicted-only-node", Tags: []string{"x"}, Evicted: true, Disabled: true},
+		{SubscriptionID: "s1", NodeHash: "evicted-missing-static", Tags: []string{"y"}, Evicted: true, Disabled: true},
 	})
 	cacheRepo.BulkUpsertNodesDynamic([]model.NodeDynamic{
 		{Hash: "valid-node"},
@@ -100,8 +100,14 @@ func TestRepairConsistency_RemovesOrphans(t *testing.T) {
 	if sn, ok := gotRows["evicted-only-node"]; !ok || !sn.Evicted {
 		t.Fatalf("expected evicted-only-node row to survive as evicted: %+v", sns)
 	}
+	if sn := gotRows["evicted-only-node"]; !sn.Disabled {
+		t.Fatalf("expected evicted-only-node disabled to survive: %+v", sns)
+	}
 	if sn, ok := gotRows["evicted-missing-static"]; !ok || !sn.Evicted {
 		t.Fatalf("expected evicted-missing-static row to survive as evicted: %+v", sns)
+	}
+	if sn := gotRows["evicted-missing-static"]; !sn.Disabled {
+		t.Fatalf("expected evicted-missing-static disabled to survive: %+v", sns)
 	}
 
 	// Verify nodes_static: only "valid-node" survives.

@@ -52,6 +52,9 @@ func (s *ControlPlaneService) subToResponse(sub *subscription.Subscription) Subs
 				return true
 			}
 			nodeCount++
+			if n.Disabled {
+				return true
+			}
 			if isHealthyAndEnabled != nil {
 				entry, ok := s.Pool.GetEntry(h)
 				if ok && isHealthyAndEnabled(entry) {
@@ -84,6 +87,11 @@ func (s *ControlPlaneService) subToResponse(sub *subscription.Subscription) Subs
 	}
 	resp.LastError = sub.GetLastError()
 	return resp
+}
+
+// SetSubscriptionNodeDisabled switches the disabled flag for a node binding inside a subscription.
+func (s *ControlPlaneService) SetSubscriptionNodeDisabledByID(id, hash string, disabled bool) error {
+	return s.SetSubscriptionNodeDisabled(id, hash, disabled)
 }
 
 // ListSubscriptions returns all subscriptions, optionally filtered by enabled.

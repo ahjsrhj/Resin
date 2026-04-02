@@ -247,17 +247,19 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 
 		old := sub.ManagedNodes()
 
-		// Keep hashes inherit historical eviction state so refresh will not
-		// re-add previously evicted nodes back into pool.
+		// Keep hashes inherit historical local state so refresh will not
+		// re-add previously evicted nodes back into pool or drop per-node
+		// disable toggles for the same hash.
 		old.RangeNodes(func(h node.Hash, oldNode subscription.ManagedNode) bool {
-			if !oldNode.Evicted {
+			if !oldNode.Evicted && !oldNode.Disabled {
 				return true
 			}
 			nextNode, ok := newManagedNodes.LoadNode(h)
 			if !ok {
 				return true
 			}
-			nextNode.Evicted = true
+			nextNode.Evicted = oldNode.Evicted
+			nextNode.Disabled = oldNode.Disabled
 			newManagedNodes.StoreNode(h, nextNode)
 			return true
 		})
@@ -343,7 +345,7 @@ func (s *SubscriptionScheduler) SetSubscriptionEnabled(sub *subscription.Subscri
 
 		if !wasEnabled && enabled {
 			sub.ManagedNodes().RangeNodes(func(h node.Hash, managed subscription.ManagedNode) bool {
-				if managed.Evicted {
+				if managed.Evicted || managed.Disabled {
 					return true
 				}
 				candidateHashes = append(candidateHashes, h)

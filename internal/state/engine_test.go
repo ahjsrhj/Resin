@@ -129,7 +129,7 @@ func TestEngine_WeakPersist_CacheDataSurvivesRestart(t *testing.T) {
 		"n1": {Hash: "n1", FailureCount: 5, EgressIP: "10.0.0.1"},
 	}
 	subNodeStore := map[model.SubscriptionNodeKey]*model.SubscriptionNode{
-		{SubscriptionID: "s1", NodeHash: "n1"}: {SubscriptionID: "s1", NodeHash: "n1", Tags: []string{"fast"}},
+		{SubscriptionID: "s1", NodeHash: "n1"}: {SubscriptionID: "s1", NodeHash: "n1", Tags: []string{"fast"}, Disabled: true},
 	}
 	latencyStore := map[model.NodeLatencyKey]*model.NodeLatency{
 		{NodeHash: "n1", Domain: "google.com"}: {NodeHash: "n1", Domain: "google.com", EwmaNs: 42000, LastUpdatedNs: 999},
@@ -174,6 +174,9 @@ func TestEngine_WeakPersist_CacheDataSurvivesRestart(t *testing.T) {
 	sns, _ := engine2.LoadAllSubscriptionNodes()
 	if len(sns) != 1 || !reflect.DeepEqual(sns[0].Tags, []string{"fast"}) {
 		t.Fatalf("subscription_nodes did not survive restart: %+v", sns)
+	}
+	if !sns[0].Disabled {
+		t.Fatalf("subscription_nodes disabled did not survive restart: %+v", sns)
 	}
 
 	lat, _ := engine2.LoadAllNodeLatency()

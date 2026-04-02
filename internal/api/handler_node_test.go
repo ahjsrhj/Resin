@@ -81,6 +81,38 @@ func TestHandleListNodes_TagKeywordFiltersByNodeName(t *testing.T) {
 	}
 }
 
+func TestHandleListNodes_TagKeywordWithSubscriptionFilterUsesScopedTags(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+
+	subA := subscription.NewSubscription("11111111-1111-1111-1111-111111111111", "sub-a", "https://example.com/a", true, false)
+	subB := subscription.NewSubscription("22222222-2222-2222-2222-222222222222", "sub-b", "https://example.com/b", true, false)
+	cp.SubMgr.Register(subA)
+	cp.SubMgr.Register(subB)
+
+	raw := `{"type":"ss","server":"1.1.1.1","port":443}`
+	hash := node.HashFromRawOptions([]byte(raw))
+	cp.Pool.AddNodeFromSub(hash, []byte(raw), subA.ID)
+	cp.Pool.AddNodeFromSub(hash, []byte(raw), subB.ID)
+	subA.ManagedNodes().StoreNode(hash, subscription.ManagedNode{Tags: []string{"alpha"}})
+	subB.ManagedNodes().StoreNode(hash, subscription.ManagedNode{Tags: []string{"bravo"}})
+
+	rec := doJSONRequest(
+		t,
+		srv,
+		http.MethodGet,
+		"/api/v1/nodes?subscription_id="+subA.ID+"&tag_keyword=bravo",
+		nil,
+		true,
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list nodes with scoped tag_keyword status: got %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := decodeJSONMap(t, rec)
+	if body["total"] != float64(0) {
+		t.Fatalf("scoped tag_keyword total: got %v, want 0", body["total"])
+	}
+}
+
 func TestHandleListNodes_UniqueEgressIPsUsesFilteredResult(t *testing.T) {
 	srv, cp, _ := newControlPlaneTestServer(t)
 
@@ -162,6 +194,43 @@ func TestHandleListNodes_UniqueEgressIPsUsesFilteredResult(t *testing.T) {
 	}
 	if body["unique_healthy_egress_ips"] != float64(1) {
 		t.Fatalf("filtered unique_healthy_egress_ips: got %v, want 1", body["unique_healthy_egress_ips"])
+	}
+}
+
+func TestHandleListNodes_UniqueHealthyEgressIPsCountsTaglessSubscriptionBindings(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+
+	sub := subscription.NewSubscription("11111111-1111-1111-1111-111111111111", "sub-a", "https://example.com/a", true, false)
+	cp.SubMgr.Register(sub)
+
+	raw := `{"type":"ss","server":"6.6.6.6","port":443}`
+	hash := node.HashFromRawOptions([]byte(raw))
+	cp.Pool.AddNodeFromSub(hash, []byte(raw), sub.ID)
+	sub.ManagedNodes().StoreNode(hash, subscription.ManagedNode{})
+
+	entry, ok := cp.Pool.GetEntry(hash)
+	if !ok {
+		t.Fatalf("node %s missing after add", hash.Hex())
+	}
+	entry.SetEgressIP(netip.MustParseAddr("203.0.113.66"))
+	ob := testutil.NewNoopOutbound()
+	entry.Outbound.Store(&ob)
+	entry.CircuitOpenSince.Store(0)
+
+	rec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes?subscription_id="+sub.ID, nil, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list nodes status: got %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	body := decodeJSONMap(t, rec)
+	if body["total"] != float64(1) {
+		t.Fatalf("total: got %v, want 1", body["total"])
+	}
+	if body["unique_egress_ips"] != float64(1) {
+		t.Fatalf("unique_egress_ips: got %v, want 1", body["unique_egress_ips"])
+	}
+	if body["unique_healthy_egress_ips"] != float64(1) {
+		t.Fatalf("unique_healthy_egress_ips: got %v, want 1", body["unique_healthy_egress_ips"])
 	}
 }
 
@@ -280,5 +349,93 @@ func TestHandleListNodes_EnabledFilter(t *testing.T) {
 	body = decodeJSONMap(t, rec)
 	if body["total"] != float64(1) {
 		t.Fatalf("enabled=false total: got %v, want 1", body["total"])
+	}
+}
+
+func TestHandleListNodes_SubscriptionNodeEnabledFilter(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+
+	sub := subscription.NewSubscription("11111111-1111-1111-1111-111111111111", "sub-a", "https://example.com/a", true, false)
+	cp.SubMgr.Register(sub)
+
+	enabledRaw := `{"type":"ss","server":"1.1.1.1","port":443}`
+	disabledRaw := `{"type":"ss","server":"2.2.2.2","port":443}`
+	enabledHash := node.HashFromRawOptions([]byte(enabledRaw))
+	disabledHash := node.HashFromRawOptions([]byte(disabledRaw))
+	addNodeForNodeListTestWithTag(t, cp, sub, enabledRaw, "", "enabled-tag")
+	addNodeForNodeListTestWithTag(t, cp, sub, disabledRaw, "", "disabled-tag")
+	managed, ok := sub.ManagedNodes().LoadNode(disabledHash)
+	if !ok {
+		t.Fatal("disabled managed node missing")
+	}
+	managed.Disabled = true
+	sub.ManagedNodes().StoreNode(disabledHash, managed)
+
+	rec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes?subscription_id="+sub.ID+"&subscription_node_enabled=true", nil, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("subscription_node_enabled=true status: got %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := decodeJSONMap(t, rec)
+	if body["total"] != float64(1) {
+		t.Fatalf("subscription_node_enabled=true total: got %v, want 1", body["total"])
+	}
+	items := body["items"].([]any)
+	item := items[0].(map[string]any)
+	if item["node_hash"] != enabledHash.Hex() {
+		t.Fatalf("subscription_node_enabled=true node_hash: got %v, want %s", item["node_hash"], enabledHash.Hex())
+	}
+
+	rec = doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes?subscription_id="+sub.ID+"&subscription_node_enabled=false", nil, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("subscription_node_enabled=false status: got %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body = decodeJSONMap(t, rec)
+	if body["total"] != float64(1) {
+		t.Fatalf("subscription_node_enabled=false total: got %v, want 1", body["total"])
+	}
+	items = body["items"].([]any)
+	item = items[0].(map[string]any)
+	if item["node_hash"] != disabledHash.Hex() {
+		t.Fatalf("subscription_node_enabled=false node_hash: got %v, want %s", item["node_hash"], disabledHash.Hex())
+	}
+}
+
+func TestHandleSetSubscriptionNodeDisabled(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+
+	sub := subscription.NewSubscription("11111111-1111-1111-1111-111111111111", "sub-a", "https://example.com/a", true, false)
+	cp.SubMgr.Register(sub)
+
+	raw := `{"type":"ss","server":"1.1.1.1","port":443}`
+	hash := node.HashFromRawOptions([]byte(raw))
+	addNodeForNodeListTestWithTag(t, cp, sub, raw, "", "tag")
+
+	rec := doJSONRequest(
+		t,
+		srv,
+		http.MethodPost,
+		"/api/v1/subscriptions/"+sub.ID+"/nodes/"+hash.Hex()+"/actions/set-disabled",
+		map[string]any{"disabled": true},
+		true,
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set-disabled status: got %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	nodeRec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes/"+hash.Hex(), nil, true)
+	if nodeRec.Code != http.StatusOK {
+		t.Fatalf("get node status: got %d, want %d, body=%s", nodeRec.Code, http.StatusOK, nodeRec.Body.String())
+	}
+	body := decodeJSONMap(t, nodeRec)
+	if body["enabled"] != false {
+		t.Fatalf("node enabled: got %v, want false", body["enabled"])
+	}
+	tags := body["tags"].([]any)
+	tag := tags[0].(map[string]any)
+	if tag["disabled"] != true {
+		t.Fatalf("tag disabled: got %v, want true", tag["disabled"])
+	}
+	if tag["subscription_enabled"] != false {
+		t.Fatalf("tag subscription_enabled: got %v, want false", tag["subscription_enabled"])
 	}
 }

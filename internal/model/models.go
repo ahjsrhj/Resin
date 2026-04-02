@@ -96,6 +96,7 @@ type SubscriptionNode struct {
 	NodeHash       string `json:"node_hash"`
 	Tags           []string
 	Evicted        bool `json:"evicted"`
+	Disabled       bool `json:"disabled"`
 }
 
 // SubscriptionNodeKey is the composite primary key for subscription_nodes.

@@ -15,15 +15,16 @@ import (
 
 // NodeFilters holds query filters for listing nodes.
 type NodeFilters struct {
-	PlatformID     *string
-	SubscriptionID *string
-	Enabled        *bool
-	Region         *string
-	CircuitOpen    *bool
-	HasOutbound    *bool
-	EgressIP       *string
-	ProbedSince    *time.Time
-	TagKeyword     *string
+	PlatformID              *string
+	SubscriptionID          *string
+	Enabled                 *bool
+	SubscriptionNodeEnabled *bool
+	Region                  *string
+	CircuitOpen             *bool
+	HasOutbound             *bool
+	EgressIP                *string
+	ProbedSince             *time.Time
+	TagKeyword              *string
 }
 
 // ListNodes returns nodes from the pool with optional filters.
@@ -134,12 +135,31 @@ func (s *ControlPlaneService) nodeEntryMatchesFilters(
 		}
 	}
 
+	if filters.SubscriptionID != nil && filters.SubscriptionNodeEnabled != nil {
+		sub := s.SubMgr.Lookup(*filters.SubscriptionID)
+		if sub == nil {
+			return false
+		}
+		managed, ok := sub.ManagedNodes().LoadNode(entry.Hash)
+		if !ok || managed.Evicted {
+			return false
+		}
+		enabled := sub.Enabled() && !managed.Disabled
+		if enabled != *filters.SubscriptionNodeEnabled {
+			return false
+		}
+	}
+
 	// Node tag fuzzy search filter.
 	if filters.TagKeyword != nil {
 		keyword := strings.ToLower(strings.TrimSpace(*filters.TagKeyword))
 		if keyword != "" {
 			matched := false
-			for _, subID := range entry.SubscriptionIDs() {
+			subIDs := entry.SubscriptionIDs()
+			if filters.SubscriptionID != nil {
+				subIDs = []string{*filters.SubscriptionID}
+			}
+			for _, subID := range subIDs {
 				sub := s.SubMgr.Lookup(subID)
 				if sub == nil {
 					continue
@@ -217,6 +237,65 @@ func (s *ControlPlaneService) GetNode(hashStr string) (*NodeSummary, error) {
 	}
 	ns := s.nodeEntryToSummary(h, entry)
 	return &ns, nil
+}
+
+// SetSubscriptionNodeDisabled updates the local disabled flag for a node within a subscription.
+func (s *ControlPlaneService) SetSubscriptionNodeDisabled(subscriptionID, hashStr string, disabled bool) error {
+	h, err := node.ParseHex(hashStr)
+	if err != nil {
+		return invalidArg("node_hash: invalid format")
+	}
+
+	sub := s.SubMgr.Lookup(subscriptionID)
+	if sub == nil {
+		return notFound("subscription not found")
+	}
+
+	var (
+		changed             bool
+		svcErr              error
+		wasGloballyDisabled bool
+	)
+	sub.WithOpLock(func() {
+		lockedSub := s.SubMgr.Lookup(subscriptionID)
+		if lockedSub == nil {
+			svcErr = notFound("subscription not found")
+			return
+		}
+		managed, ok := lockedSub.ManagedNodes().LoadNode(h)
+		if !ok || managed.Evicted {
+			svcErr = notFound("subscription node not found")
+			return
+		}
+		if _, ok := s.Pool.GetEntry(h); !ok {
+			svcErr = notFound("subscription node not found")
+			return
+		}
+
+		wasGloballyDisabled = s.Pool.IsNodeDisabled(h)
+		if managed.Disabled == disabled {
+			return
+		}
+		managed.Disabled = disabled
+		lockedSub.ManagedNodes().StoreNode(h, managed)
+		changed = true
+		if s.Engine != nil {
+			s.Engine.MarkSubscriptionNode(subscriptionID, h.Hex())
+		}
+	})
+	if svcErr != nil {
+		return svcErr
+	}
+	if !changed {
+		return nil
+	}
+
+	s.Pool.NotifyNodeDirty(h)
+	if s.ProbeMgr != nil && wasGloballyDisabled && !s.Pool.IsNodeDisabled(h) {
+		s.ProbeMgr.TriggerImmediateEgressProbe(h)
+		s.ProbeMgr.TriggerImmediateLatencyProbe(h)
+	}
+	return nil
 }
 
 // ProbeEgress triggers a synchronous egress probe and returns results.

@@ -21,8 +21,9 @@ const (
 
 // ManagedNode represents one hash entry in subscription managed nodes.
 type ManagedNode struct {
-	Tags    []string
-	Evicted bool
+	Tags     []string
+	Evicted  bool
+	Disabled bool
 }
 
 // ManagedNodes wraps hash->ManagedNode map.
@@ -69,8 +70,9 @@ func (mn *ManagedNodes) StoreNode(h node.Hash, n ManagedNode) {
 		return
 	}
 	mn.m.Store(h, ManagedNode{
-		Tags:    cloneTags(n.Tags),
-		Evicted: n.Evicted,
+		Tags:     cloneTags(n.Tags),
+		Evicted:  n.Evicted,
+		Disabled: n.Disabled,
 	})
 }
 

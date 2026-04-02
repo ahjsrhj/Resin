@@ -1120,6 +1120,38 @@ func TestScheduler_SetSubscriptionEnabled_RebuildsPlatformViews(t *testing.T) {
 	}
 }
 
+func TestScheduler_UpdateSubscription_PreservesDisabledStateForKeptHash(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "Provider", "http://example.com", true, false)
+	subMgr.Register(sub)
+
+	pool := newTestPool(subMgr)
+	sched := newTestScheduler(subMgr, pool, func(_ string) ([]byte, error) {
+		return []byte(`ss://YWVzLTI1Ni1nY206cGFzc0AxLjEuMS4xOjQ0Mw==#node-1`), nil
+	})
+
+	raw := json.RawMessage(`{"type":"shadowsocks","method":"aes-256-gcm","password":"pass","server":"1.1.1.1","server_port":443}`)
+	h := node.HashFromRawOptions(raw)
+
+	oldManaged := subscription.NewManagedNodes()
+	oldManaged.StoreNode(h, subscription.ManagedNode{
+		Tags:     []string{"node-1"},
+		Disabled: true,
+	})
+	sub.SwapManagedNodes(oldManaged)
+	pool.AddNodeFromSub(h, raw, sub.ID)
+
+	sched.UpdateSubscription(sub)
+
+	managed, ok := sub.ManagedNodes().LoadNode(h)
+	if !ok {
+		t.Fatalf("managed node %s missing after refresh", h.Hex())
+	}
+	if !managed.Disabled {
+		t.Fatal("disabled flag should survive refresh for kept hash")
+	}
+}
+
 func TestScheduler_SetSubscriptionEnabled_RebuildsPlatformViews_EmptyRegex(t *testing.T) {
 	subMgr := NewSubscriptionManager()
 	sub := subscription.NewSubscription("s1", "Provider", "http://example.com", true, false)

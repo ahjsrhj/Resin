@@ -1,7 +1,10 @@
 .git
 .agents
+.env
+.env.*
 resin
 sing-box-reference
+data/
 node_modules
 webui/node_modules
 webui/dist

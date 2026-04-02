@@ -7,6 +7,10 @@ import (
 	"github.com/Resinat/Resin/internal/service"
 )
 
+type setSubscriptionNodeDisabledRequest struct {
+	Disabled *bool `json:"disabled"`
+}
+
 func subscriptionMatchesKeyword(s service.SubscriptionResponse, keyword string) bool {
 	contains := func(v string) bool {
 		return strings.Contains(strings.ToLower(v), keyword)
@@ -175,5 +179,32 @@ func HandleCleanupSubscriptionCircuitOpenNodes(cp *service.ControlPlaneService) 
 			return
 		}
 		WriteJSON(w, http.StatusOK, map[string]int{"cleaned_count": cleanedCount})
+	}
+}
+
+// HandleSetSubscriptionNodeDisabled returns a handler for
+// POST /api/v1/subscriptions/{id}/nodes/{hash}/actions/set-disabled.
+func HandleSetSubscriptionNodeDisabled(cp *service.ControlPlaneService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := requireUUIDPathParam(w, r, "id", "subscription_id")
+		if !ok {
+			return
+		}
+
+		var req setSubscriptionNodeDisabledRequest
+		if err := DecodeBody(r, &req); err != nil {
+			writeDecodeBodyError(w, err)
+			return
+		}
+		if req.Disabled == nil {
+			writeInvalidArgument(w, "disabled is required")
+			return
+		}
+
+		if err := cp.SetSubscriptionNodeDisabledByID(id, PathParam(r, "hash"), *req.Disabled); err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }

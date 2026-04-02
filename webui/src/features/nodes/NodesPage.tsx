@@ -18,14 +18,19 @@ import { formatDateTime, formatRelativeTime } from "../../lib/time";
 import { listPlatforms } from "../platforms/api";
 import type { Platform } from "../platforms/types";
 import { listSubscriptions } from "../subscriptions/api";
-import { getNode, listNodes, probeEgress, probeLatency } from "./api";
-import type { NodeSummary } from "./types";
+import { getNode, listNodes, probeEgress, probeLatency, setSubscriptionNodeDisabled } from "./api";
+import type { NodeSummary, NodeTag } from "./types";
 import { getAllRegions, getRegionName } from "./regions";
 import type { NodeListFilters, NodeSortBy, SortOrder } from "./types";
 
-type NodeStatusFilter = "all" | "healthy" | "circuit_open" | "error" | "disabled";
+type NodeStatusFilter = "all" | "enabled" | "healthy" | "circuit_open" | "error" | "disabled";
 type NodeDisplayStatus = "healthy" | "circuit_open" | "pending_test" | "error" | "disabled";
 type ProbeAction = "egress" | "latency";
+type ToggleActionTarget = {
+  subscriptionId: string;
+  nodeHash: string;
+  disabled: boolean;
+};
 
 type NodeFilterDraft = {
   platform_id: string;
@@ -84,7 +89,14 @@ function parseStatusParam(value: string | null): NodeStatusFilter | undefined {
   }
 
   const normalized = value.trim().toLowerCase();
-  if (normalized === "all" || normalized === "healthy" || normalized === "circuit_open" || normalized === "error" || normalized === "disabled") {
+  if (
+    normalized === "all" ||
+    normalized === "enabled" ||
+    normalized === "healthy" ||
+    normalized === "circuit_open" ||
+    normalized === "error" ||
+    normalized === "disabled"
+  ) {
     return normalized;
   }
 
@@ -97,10 +109,14 @@ function statusFromQuery(params: URLSearchParams): NodeStatusFilter {
     return explicitStatus;
   }
 
+  const subscriptionNodeEnabled = parseBoolParam(params.get("subscription_node_enabled"));
   const hasOutbound = parseBoolParam(params.get("has_outbound"));
   const circuitOpen = parseBoolParam(params.get("circuit_open"));
   const enabled = parseBoolParam(params.get("enabled"));
 
+  if (subscriptionNodeEnabled === false) {
+    return "disabled";
+  }
   if (enabled === false) {
     return "disabled";
   }
@@ -113,6 +129,9 @@ function statusFromQuery(params: URLSearchParams): NodeStatusFilter {
   }
   if (hasOutbound === true && circuitOpen === false) {
     return "healthy";
+  }
+  if (subscriptionNodeEnabled === true || enabled === true) {
+    return "enabled";
   }
 
   return "all";
@@ -142,24 +161,49 @@ function draftToActiveFilters(draft: NodeFilterDraft): NodeListFilters {
   let circuit_open: boolean | undefined = undefined;
   let has_outbound: boolean | undefined = undefined;
   let enabled: boolean | undefined = undefined;
+  let subscription_node_enabled: boolean | undefined = undefined;
+  const useSubscriptionStatus = Boolean(draft.subscription_id);
 
   switch (draft.status) {
+    case "enabled":
+      if (useSubscriptionStatus) {
+        subscription_node_enabled = true;
+      } else {
+        enabled = true;
+      }
+      break;
     case "healthy":
-      enabled = true;
+      if (useSubscriptionStatus) {
+        subscription_node_enabled = true;
+      } else {
+        enabled = true;
+      }
       has_outbound = true;
       circuit_open = false;
       break;
     case "circuit_open":
-      enabled = true;
+      if (useSubscriptionStatus) {
+        subscription_node_enabled = true;
+      } else {
+        enabled = true;
+      }
       has_outbound = true;
       circuit_open = true;
       break;
     case "error":
-      enabled = true;
+      if (useSubscriptionStatus) {
+        subscription_node_enabled = true;
+      } else {
+        enabled = true;
+      }
       has_outbound = false;
       break;
     case "disabled":
-      enabled = false;
+      if (useSubscriptionStatus) {
+        subscription_node_enabled = false;
+      } else {
+        enabled = false;
+      }
       break;
     case "all":
     default:
@@ -173,12 +217,24 @@ function draftToActiveFilters(draft: NodeFilterDraft): NodeListFilters {
     region: draft.region,
     egress_ip: draft.egress_ip,
     enabled,
+    subscription_node_enabled,
     circuit_open,
     has_outbound,
   };
 }
 
-function firstTag(node: { display_tag?: string; tags: { tag: string }[] }): string {
+function getSubscriptionTag(node: { tags: NodeTag[] }, subscriptionId?: string): NodeTag | null {
+  if (!subscriptionId) {
+    return null;
+  }
+  return node.tags.find((tag) => tag.subscription_id === subscriptionId) ?? null;
+}
+
+function firstTag(node: { display_tag?: string; tags: NodeTag[] }, subscriptionId?: string): string {
+  const scopedTag = getSubscriptionTag(node, subscriptionId);
+  if (scopedTag) {
+    return scopedTag.tag;
+  }
   if (node.display_tag && node.display_tag.trim()) {
     return node.display_tag;
   }
@@ -196,8 +252,16 @@ function isPendingTestNode(node: NodeSummary): boolean {
   return Boolean(node.circuit_open_since) && node.failure_count === 0;
 }
 
-function getNodeDisplayStatus(node: NodeSummary): NodeDisplayStatus {
-  if (!node.enabled) {
+function isNodeEnabledForView(node: NodeSummary, subscriptionId?: string): boolean {
+  const scopedTag = getSubscriptionTag(node, subscriptionId);
+  if (scopedTag) {
+    return scopedTag.subscription_enabled;
+  }
+  return node.enabled;
+}
+
+function getNodeDisplayStatus(node: NodeSummary, subscriptionId?: string): NodeDisplayStatus {
+  if (!isNodeEnabledForView(node, subscriptionId)) {
     return "disabled";
   }
   if (!node.has_outbound) {
@@ -225,8 +289,8 @@ function referenceLatencyColor(latencyMs: number): string {
   return "var(--danger)";
 }
 
-function displayableReferenceLatencyMs(node: NodeSummary): number | null {
-  if (getNodeDisplayStatus(node) !== "healthy") {
+function displayableReferenceLatencyMs(node: NodeSummary, subscriptionId?: string): number | null {
+  if (getNodeDisplayStatus(node, subscriptionId) !== "healthy") {
     return null;
   }
   if (!hasReferenceLatency(node)) {
@@ -260,6 +324,17 @@ function regionToFlag(region: string | undefined): string {
   return name ? `${flag} ${code} (${name})` : `${flag} ${code}`;
 }
 
+function tagDisplayStatus(tag: NodeTag): NodeDisplayStatus {
+  if (!tag.subscription_enabled) {
+    return "disabled";
+  }
+  return "healthy";
+}
+
+function toggleSubscriptionNodeLabel(tag: NodeTag): string {
+  return tag.disabled ? "取消禁用" : "设为禁用";
+}
+
 export function NodesPage() {
   const { locale, t } = useI18n();
   const location = useLocation();
@@ -275,9 +350,11 @@ export function NodesPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [pendingEgressHashes, setPendingEgressHashes] = useState<Set<string>>(() => new Set());
   const [pendingLatencyHashes, setPendingLatencyHashes] = useState<Set<string>>(() => new Set());
+  const [pendingToggleKeys, setPendingToggleKeys] = useState<Set<string>>(() => new Set());
   const { toasts, showToast, dismissToast } = useToast();
   const pendingEgressHashesRef = useRef<Set<string>>(new Set());
   const pendingLatencyHashesRef = useRef<Set<string>>(new Set());
+  const pendingToggleKeysRef = useRef<Set<string>>(new Set());
 
   const queryClient = useQueryClient();
 
@@ -342,7 +419,7 @@ export function NodesPage() {
     return nodes.find((item) => item.node_hash === selectedNodeHash) ?? null;
   }, [nodes, selectedNodeHash]);
 
-  const selectedHash = selectedNode?.node_hash || "";
+  const selectedHash = selectedNodeHash;
 
   const nodeDetailQuery = useQuery({
     queryKey: ["node", selectedHash],
@@ -413,6 +490,28 @@ export function NodesPage() {
     },
   });
 
+  const toggleSubscriptionNodeDisabledMutation = useMutation({
+    mutationFn: async ({ subscriptionId, nodeHash, disabled }: ToggleActionTarget) =>
+      setSubscriptionNodeDisabled({
+        subscription_id: subscriptionId,
+        node_hash: nodeHash,
+        disabled,
+      }),
+    onSuccess: async (_result, variables) => {
+      await refreshNodes();
+      showToast(
+        "success",
+        variables.disabled
+          ? t("已禁用订阅节点")
+          : t("已启用订阅节点")
+      );
+    },
+    onError: async (error) => {
+      await refreshNodes();
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
   const markProbePending = (hash: string, action: ProbeAction): boolean => {
     if (action === "egress") {
       if (pendingEgressHashesRef.current.has(hash)) {
@@ -456,8 +555,36 @@ export function NodesPage() {
     setPendingLatencyHashes(next);
   };
 
+  const toggleKey = (subscriptionId: string, nodeHash: string) => `${subscriptionId}:${nodeHash}`;
+
+  const markTogglePending = (subscriptionId: string, nodeHash: string): boolean => {
+    const key = toggleKey(subscriptionId, nodeHash);
+    if (pendingToggleKeysRef.current.has(key)) {
+      return false;
+    }
+    const next = new Set(pendingToggleKeysRef.current);
+    next.add(key);
+    pendingToggleKeysRef.current = next;
+    setPendingToggleKeys(next);
+    return true;
+  };
+
+  const clearTogglePending = (subscriptionId: string, nodeHash: string) => {
+    const key = toggleKey(subscriptionId, nodeHash);
+    if (!pendingToggleKeysRef.current.has(key)) {
+      return;
+    }
+    const next = new Set(pendingToggleKeysRef.current);
+    next.delete(key);
+    pendingToggleKeysRef.current = next;
+    setPendingToggleKeys(next);
+  };
+
   const isProbePending = (hash: string, action: ProbeAction): boolean =>
     action === "egress" ? pendingEgressHashes.has(hash) : pendingLatencyHashes.has(hash);
+
+  const isTogglePending = (subscriptionId: string, nodeHash: string): boolean =>
+    pendingToggleKeys.has(toggleKey(subscriptionId, nodeHash));
 
   const runProbeEgress = async (hash: string) => {
     if (!markProbePending(hash, "egress")) {
@@ -482,6 +609,19 @@ export function NodesPage() {
       // Mutation callbacks already surface the failure to the user.
     } finally {
       clearProbePending(hash, "latency");
+    }
+  };
+
+  const runToggleSubscriptionNodeDisabled = async (subscriptionId: string, nodeHash: string, disabled: boolean) => {
+    if (!markTogglePending(subscriptionId, nodeHash)) {
+      return;
+    }
+    try {
+      await toggleSubscriptionNodeDisabledMutation.mutateAsync({ subscriptionId, nodeHash, disabled });
+    } catch {
+      // Mutation callbacks already surface the failure to the user.
+    } finally {
+      clearTogglePending(subscriptionId, nodeHash);
     }
   };
 
@@ -522,7 +662,7 @@ export function NodesPage() {
   const col = createColumnHelper<NodeSummary>();
 
   const nodeColumns = [
-    col.accessor((row) => firstTag(row), {
+    col.accessor((row) => firstTag(row, activeFilters.subscription_id), {
       id: "tag",
       header: () => (
         <button type="button" className="table-sort-btn" onClick={() => changeSort("tag")}>
@@ -568,7 +708,7 @@ export function NodesPage() {
       header: t("参考延迟"),
       cell: (info) => {
         const node = info.row.original;
-        const latencyMs = displayableReferenceLatencyMs(node);
+        const latencyMs = displayableReferenceLatencyMs(node, activeFilters.subscription_id);
         if (latencyMs === null) {
           return "-";
         }
@@ -600,7 +740,7 @@ export function NodesPage() {
       header: t("状态"),
       cell: (info) => {
         const node = info.row.original;
-        const status = getNodeDisplayStatus(node);
+        const status = getNodeDisplayStatus(node, activeFilters.subscription_id);
         if (status === "disabled") return <Badge variant="neutral">{t("禁用")}</Badge>;
         if (status === "error") return <Badge variant="danger">{t("错误")}</Badge>;
         if (status === "pending_test") return <Badge variant="muted">{t("待测")}</Badge>;
@@ -635,8 +775,28 @@ export function NodesPage() {
       header: t("操作"),
       cell: (info) => {
         const node = info.row.original;
+        const scopedTag = getSubscriptionTag(node, activeFilters.subscription_id);
         return (
           <div className="subscriptions-row-actions" onClick={(event) => event.stopPropagation()}>
+            {scopedTag && activeFilters.subscription_id ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                title={scopedTag.disabled ? t("取消当前订阅下该节点的禁用") : t("将当前订阅下该节点设为禁用")}
+                onClick={() =>
+                  void runToggleSubscriptionNodeDisabled(
+                    activeFilters.subscription_id!,
+                    node.node_hash,
+                    !scopedTag.disabled
+                  )
+                }
+                disabled={isTogglePending(activeFilters.subscription_id, node.node_hash)}
+              >
+                {isTogglePending(activeFilters.subscription_id, node.node_hash)
+                  ? t("处理中...")
+                  : t(toggleSubscriptionNodeLabel(scopedTag))}
+              </Button>
+            ) : null}
             <Button
               size="sm"
               variant="ghost"
@@ -782,6 +942,7 @@ export function NodesPage() {
                 style={NODE_FILTER_CONTROL_STYLE}
               >
                 <option value="all">{t("全部")}</option>
+                <option value="enabled">{t("启用")}</option>
                 <option value="healthy">{t("健康")}</option>
                 <option value="circuit_open">{t("熔断 / 待测")}</option>
                 <option value="error">{t("错误")}</option>
@@ -845,13 +1006,13 @@ export function NodesPage() {
           className="drawer-overlay"
           role="dialog"
           aria-modal="true"
-          aria-label={t("节点详情 {{name}}", { name: firstTag(detailNode) })}
+          aria-label={t("节点详情 {{name}}", { name: firstTag(detailNode, activeFilters.subscription_id) })}
           onClick={() => setDrawerOpen(false)}
         >
           <Card className="drawer-panel" onClick={(event) => event.stopPropagation()}>
             <div className="drawer-header">
               <div>
-                <h3>{firstTag(detailNode)}</h3>
+                <h3>{firstTag(detailNode, activeFilters.subscription_id)}</h3>
                 <p>{detailNode.node_hash}</p>
               </div>
               <div className="drawer-header-actions">
@@ -886,7 +1047,7 @@ export function NodesPage() {
                     <span>{t("状态")}</span>
                     <div>
                       {(() => {
-                        const status = getNodeDisplayStatus(detailNode);
+                        const status = getNodeDisplayStatus(detailNode, activeFilters.subscription_id);
                         return (
                           <div style={{ display: "flex", alignItems: "baseline", gap: "4px", flexWrap: "wrap" }}>
                             {status === "error" ? (
@@ -925,7 +1086,7 @@ export function NodesPage() {
                   <div>
                     <span>{t("参考延迟")}</span>
                     {(() => {
-                      const latencyMs = displayableReferenceLatencyMs(detailNode);
+                      const latencyMs = displayableReferenceLatencyMs(detailNode, activeFilters.subscription_id);
                       if (latencyMs === null) {
                         return <p>-</p>;
                       }
@@ -955,6 +1116,25 @@ export function NodesPage() {
                       <div key={`${tag.subscription_id}:${tag.tag}`} className="tag-item">
                         <p>{tag.tag}</p>
                         <span>{tag.subscription_name}</span>
+                        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+                          {tagDisplayStatus(tag) === "disabled" ? (
+                            <Badge variant="neutral">{t("禁用")}</Badge>
+                          ) : (
+                            <Badge variant="success">{t("启用")}</Badge>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() =>
+                              void runToggleSubscriptionNodeDisabled(tag.subscription_id, detailNode.node_hash, !tag.disabled)
+                            }
+                            disabled={isTogglePending(tag.subscription_id, detailNode.node_hash)}
+                          >
+                            {isTogglePending(tag.subscription_id, detailNode.node_hash)
+                              ? t("处理中...")
+                              : t(toggleSubscriptionNodeLabel(tag))}
+                          </Button>
+                        </div>
                         <code>{tag.subscription_id}</code>
                       </div>
                     ))}

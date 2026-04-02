@@ -244,7 +244,7 @@ func (r *CacheRepo) BulkUpsertSubscriptionNodes(nodes []model.SubscriptionNode) 
 			if err != nil {
 				return fmt.Errorf("encode subscription node tags: %w", err)
 			}
-			_, err = stmt.Exec(sn.SubscriptionID, sn.NodeHash, tagsJSON, sn.Evicted)
+			_, err = stmt.Exec(sn.SubscriptionID, sn.NodeHash, tagsJSON, sn.Evicted, sn.Disabled)
 			return err
 		},
 	)
@@ -265,7 +265,7 @@ func (r *CacheRepo) BulkDeleteSubscriptionNodes(keys []model.SubscriptionNodeKey
 
 // LoadAllSubscriptionNodes reads all subscription-node links.
 func (r *CacheRepo) LoadAllSubscriptionNodes() ([]model.SubscriptionNode, error) {
-	rows, err := r.db.Query("SELECT subscription_id, node_hash, tags_json, evicted FROM subscription_nodes")
+	rows, err := r.db.Query("SELECT subscription_id, node_hash, tags_json, evicted, disabled FROM subscription_nodes")
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +275,7 @@ func (r *CacheRepo) LoadAllSubscriptionNodes() ([]model.SubscriptionNode, error)
 	for rows.Next() {
 		var sn model.SubscriptionNode
 		var tagsJSON string
-		if err := rows.Scan(&sn.SubscriptionID, &sn.NodeHash, &tagsJSON, &sn.Evicted); err != nil {
+		if err := rows.Scan(&sn.SubscriptionID, &sn.NodeHash, &tagsJSON, &sn.Evicted, &sn.Disabled); err != nil {
 			return nil, err
 		}
 		tags, err := decodeStringSliceJSON(tagsJSON)
@@ -383,7 +383,7 @@ func (r *CacheRepo) FlushTx(ops FlushOps) error {
 			if err != nil {
 				return fmt.Errorf("encode subscription node tags: %w", err)
 			}
-			_, err = s.Exec(sn.SubscriptionID, sn.NodeHash, tagsJSON, sn.Evicted)
+			_, err = s.Exec(sn.SubscriptionID, sn.NodeHash, tagsJSON, sn.Evicted, sn.Disabled)
 			return err
 		}},
 		{"upsert_nodes_dynamic", upsertNodesDynamicSQL, len(ops.UpsertNodesDynamic), func(s *sql.Stmt, i int) error {
@@ -481,11 +481,12 @@ const (
 			expiry_ns       = excluded.expiry_ns,
 			last_accessed_ns = excluded.last_accessed_ns`
 
-	upsertSubscriptionNodesSQL = `INSERT INTO subscription_nodes (subscription_id, node_hash, tags_json, evicted)
-		 VALUES (?, ?, ?, ?)
+	upsertSubscriptionNodesSQL = `INSERT INTO subscription_nodes (subscription_id, node_hash, tags_json, evicted, disabled)
+		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(subscription_id, node_hash) DO UPDATE SET
 			tags_json = excluded.tags_json,
-			evicted = excluded.evicted`
+			evicted = excluded.evicted,
+			disabled = excluded.disabled`
 
 	deleteNodesStaticSQL       = "DELETE FROM nodes_static WHERE hash = ?"
 	deleteNodesDynamicSQL      = "DELETE FROM nodes_dynamic WHERE hash = ?"

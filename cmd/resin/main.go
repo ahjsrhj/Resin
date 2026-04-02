@@ -572,6 +572,7 @@ func newFlushReaders(
 				NodeHash:       key.NodeHash,
 				Tags:           append([]string(nil), managed.Tags...),
 				Evicted:        managed.Evicted,
+				Disabled:       managed.Disabled,
 			}
 		},
 	}
@@ -820,8 +821,9 @@ func restoreBootstrapSubscriptionBindings(
 				continue
 			}
 			managed.StoreNode(hash, subscription.ManagedNode{
-				Tags:    append([]string(nil), sn.Tags...),
-				Evicted: sn.Evicted,
+				Tags:     append([]string(nil), sn.Tags...),
+				Evicted:  sn.Evicted,
+				Disabled: sn.Disabled,
 			})
 			// Restore runtime hold references only for non-evicted rows.
 			if !sn.Evicted {

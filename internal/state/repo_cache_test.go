@@ -215,8 +215,8 @@ func TestCacheRepo_SubscriptionNodes_BulkUpsertAndLoad(t *testing.T) {
 	repo := newTestCacheRepo(t)
 
 	sns := []model.SubscriptionNode{
-		{SubscriptionID: "s1", NodeHash: "n1", Tags: []string{"tag1", "tag2"}, Evicted: true},
-		{SubscriptionID: "s1", NodeHash: "n2", Tags: []string{"tag3"}, Evicted: false},
+		{SubscriptionID: "s1", NodeHash: "n1", Tags: []string{"tag1", "tag2"}, Evicted: true, Disabled: true},
+		{SubscriptionID: "s1", NodeHash: "n2", Tags: []string{"tag3"}, Evicted: false, Disabled: false},
 	}
 	if err := repo.BulkUpsertSubscriptionNodes(sns); err != nil {
 		t.Fatal(err)
@@ -233,6 +233,7 @@ func TestCacheRepo_SubscriptionNodes_BulkUpsertAndLoad(t *testing.T) {
 	// Idempotent upsert: update tags.
 	sns[0].Tags = []string{"tag1-updated"}
 	sns[0].Evicted = false
+	sns[0].Disabled = false
 	repo.BulkUpsertSubscriptionNodes(sns[:1])
 	loaded, _ = repo.LoadAllSubscriptionNodes()
 	for _, sn := range loaded {
@@ -242,6 +243,9 @@ func TestCacheRepo_SubscriptionNodes_BulkUpsertAndLoad(t *testing.T) {
 			}
 			if sn.Evicted {
 				t.Fatal("expected evicted=false after idempotent upsert update")
+			}
+			if sn.Disabled {
+				t.Fatal("expected disabled=false after idempotent upsert update")
 			}
 		}
 	}

@@ -72,8 +72,9 @@ func TestManagedNodes_LoadNodeStoreNode(t *testing.T) {
 	h := node.HashFromRawOptions([]byte(`{"type":"ss","server":"1.1.1.1"}`))
 
 	m.StoreNode(h, ManagedNode{
-		Tags:    []string{"tag-a", "tag-b"},
-		Evicted: true,
+		Tags:     []string{"tag-a", "tag-b"},
+		Evicted:  true,
+		Disabled: true,
 	})
 
 	got, ok := m.LoadNode(h)
@@ -82,6 +83,9 @@ func TestManagedNodes_LoadNodeStoreNode(t *testing.T) {
 	}
 	if !got.Evicted {
 		t.Fatal("expected Evicted=true")
+	}
+	if !got.Disabled {
+		t.Fatal("expected Disabled=true")
 	}
 	if len(got.Tags) != 2 || got.Tags[0] != "tag-a" || got.Tags[1] != "tag-b" {
 		t.Fatalf("unexpected tags: %+v", got.Tags)

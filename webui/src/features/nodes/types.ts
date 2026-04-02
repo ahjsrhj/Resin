@@ -2,6 +2,8 @@ export type NodeTag = {
   subscription_id: string;
   subscription_name: string;
   tag: string;
+  disabled: boolean;
+  subscription_enabled: boolean;
 };
 
 export type NodeSummary = {
@@ -43,6 +45,7 @@ export type NodeListFilters = {
   egress_ip?: string;
   probed_since?: string;
   enabled?: boolean;
+  subscription_node_enabled?: boolean;
   circuit_open?: boolean;
   has_outbound?: boolean;
 };
@@ -62,4 +65,10 @@ export type EgressProbeResult = {
 
 export type LatencyProbeResult = {
   latency_ewma_ms: number;
+};
+
+export type SetSubscriptionNodeDisabledInput = {
+  subscription_id: string;
+  node_hash: string;
+  disabled: boolean;
 };

@@ -594,6 +594,38 @@ func TestPool_IsNodeDisabled(t *testing.T) {
 	}
 }
 
+func TestPool_IsNodeDisabled_IgnoresDisabledBindings(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	subA := subscription.NewSubscription("sub-a", "A", "url", true, false)
+	subB := subscription.NewSubscription("sub-b", "B", "url", true, false)
+	subMgr.Register(subA)
+	subMgr.Register(subB)
+
+	pool := newTestPool(subMgr)
+	raw := json.RawMessage(`{"type":"ss","server":"3.3.3.3"}`)
+	h := node.HashFromRawOptions(raw)
+
+	pool.AddNodeFromSub(h, raw, subA.ID)
+	pool.AddNodeFromSub(h, raw, subB.ID)
+	subA.ManagedNodes().StoreNode(h, subscription.ManagedNode{Tags: []string{"a"}, Disabled: true})
+	subB.ManagedNodes().StoreNode(h, subscription.ManagedNode{Tags: []string{"b"}})
+
+	if pool.IsNodeDisabled(h) {
+		t.Fatal("node should remain enabled while another binding is still enabled")
+	}
+
+	managedB, ok := subB.ManagedNodes().LoadNode(h)
+	if !ok {
+		t.Fatal("subB managed node missing")
+	}
+	managedB.Disabled = true
+	subB.ManagedNodes().StoreNode(h, managedB)
+
+	if !pool.IsNodeDisabled(h) {
+		t.Fatal("node should be disabled when all bindings are disabled")
+	}
+}
+
 func TestPool_MakeHealthyAndEnabledEvaluator_ExcludesDisabledNodes(t *testing.T) {
 	subMgr := NewSubscriptionManager()
 	enabledSub := subscription.NewSubscription("sub-enabled", "Enabled", "url", true, false)

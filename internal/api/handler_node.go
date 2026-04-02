@@ -11,7 +11,14 @@ import (
 	"github.com/Resinat/Resin/internal/service"
 )
 
-func nodeTagSortKey(n service.NodeSummary) string {
+func nodeTagSortKey(n service.NodeSummary, subscriptionID *string) string {
+	if subscriptionID != nil {
+		for _, t := range n.Tags {
+			if t.SubscriptionID == *subscriptionID {
+				return t.Tag
+			}
+		}
+	}
 	if n.DisplayTag != "" {
 		return n.DisplayTag
 	}
@@ -33,7 +40,7 @@ func nodeTagSortKey(n service.NodeSummary) string {
 	return bestTag
 }
 
-func compareNodeSummaries(sortBy string, a, b service.NodeSummary) int {
+func compareNodeSummaries(sortBy string, subscriptionID *string, a, b service.NodeSummary) int {
 	order := 0
 	switch sortBy {
 	case "created_at":
@@ -43,7 +50,7 @@ func compareNodeSummaries(sortBy string, a, b service.NodeSummary) int {
 	case "region":
 		order = strings.Compare(a.Region, b.Region)
 	default:
-		order = strings.Compare(nodeTagSortKey(a), nodeTagSortKey(b))
+		order = strings.Compare(nodeTagSortKey(a, subscriptionID), nodeTagSortKey(b, subscriptionID))
 	}
 	if order != 0 {
 		return order
@@ -51,9 +58,9 @@ func compareNodeSummaries(sortBy string, a, b service.NodeSummary) int {
 	return strings.Compare(a.NodeHash, b.NodeHash)
 }
 
-func sortNodeSummaries(nodes []service.NodeSummary, sorting Sorting) {
+func sortNodeSummaries(nodes []service.NodeSummary, sorting Sorting, subscriptionID *string) {
 	slices.SortStableFunc(nodes, func(a, b service.NodeSummary) int {
-		return applySortOrder(compareNodeSummaries(sorting.SortBy, a, b), sorting.SortOrder)
+		return applySortOrder(compareNodeSummaries(sorting.SortBy, subscriptionID, a, b), sorting.SortOrder)
 	})
 }
 
@@ -77,13 +84,32 @@ func countUniqueEgressIPs(nodes []service.NodeSummary) int {
 	return len(seen)
 }
 
-func countUniqueHealthyAndEnabledEgressIPs(nodes []service.NodeSummary) int {
+func isHealthyForSubscription(n service.NodeSummary, subscriptionID string) bool {
+	if n.EgressIP == "" || !n.HasOutbound || n.CircuitOpenSince != nil {
+		return false
+	}
+	if n.SubscriptionEnabledByID != nil {
+		return n.SubscriptionEnabledByID[subscriptionID]
+	}
+	for _, tag := range n.Tags {
+		if tag.SubscriptionID == subscriptionID {
+			return tag.SubscriptionEnabled
+		}
+	}
+	return false
+}
+
+func countUniqueHealthyAndEnabledEgressIPs(nodes []service.NodeSummary, subscriptionID *string) int {
 	seen := make(map[string]struct{})
 	for _, n := range nodes {
 		if n.EgressIP == "" {
 			continue
 		}
-		if !n.IsHealthyAndEnabled() {
+		if subscriptionID != nil {
+			if !isHealthyForSubscription(n, *subscriptionID) {
+				continue
+			}
+		} else if !n.IsHealthyAndEnabled() {
 			continue
 		}
 		seen[n.EgressIP] = struct{}{}
@@ -137,6 +163,16 @@ func HandleListNodes(cp *service.ControlPlaneService) http.HandlerFunc {
 		}
 		filters.Enabled = enabled
 
+		subscriptionNodeEnabled, ok := parseBoolQueryOrWriteInvalid(w, r, "subscription_node_enabled")
+		if !ok {
+			return
+		}
+		if subscriptionNodeEnabled != nil && filters.SubscriptionID == nil {
+			writeInvalidArgument(w, "subscription_node_enabled: requires subscription_id")
+			return
+		}
+		filters.SubscriptionNodeEnabled = subscriptionNodeEnabled
+
 		if v := q.Get("probed_since"); v != "" {
 			t, err := time.Parse(time.RFC3339Nano, v)
 			if err != nil {
@@ -156,7 +192,7 @@ func HandleListNodes(cp *service.ControlPlaneService) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		sortNodeSummaries(nodes, sorting)
+		sortNodeSummaries(nodes, sorting, filters.SubscriptionID)
 
 		pg, ok := parsePaginationOrWriteInvalid(w, r)
 		if !ok {
@@ -168,7 +204,7 @@ func HandleListNodes(cp *service.ControlPlaneService) http.HandlerFunc {
 			Limit:                  pg.Limit,
 			Offset:                 pg.Offset,
 			UniqueEgressIPs:        countUniqueEgressIPs(nodes),
-			UniqueHealthyEgressIPs: countUniqueHealthyAndEnabledEgressIPs(nodes),
+			UniqueHealthyEgressIPs: countUniqueHealthyAndEnabledEgressIPs(nodes, filters.SubscriptionID),
 		})
 	}
 }
