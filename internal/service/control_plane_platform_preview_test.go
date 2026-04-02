@@ -11,7 +11,14 @@ import (
 	"github.com/Resinat/Resin/internal/topology"
 )
 
-func buildPreviewFilterFixture(t *testing.T) (*ControlPlaneService, string, string) {
+type previewFilterFixture struct {
+	cp          *ControlPlaneService
+	hkHash      string
+	usHash      string
+	unknownHash string
+}
+
+func buildPreviewFilterFixture(t *testing.T) previewFilterFixture {
 	t.Helper()
 
 	subMgr := topology.NewSubscriptionManager()
@@ -36,6 +43,11 @@ func buildPreviewFilterFixture(t *testing.T) (*ControlPlaneService, string, stri
 	pool.AddNodeFromSub(usHash, usRaw, sub.ID)
 	sub.ManagedNodes().StoreNode(usHash, subscription.ManagedNode{Tags: []string{"all", "us"}})
 
+	unknownRaw := []byte(`{"type":"ss","server":"3.3.3.3","port":443}`)
+	unknownHash := node.HashFromRawOptions(unknownRaw)
+	pool.AddNodeFromSub(unknownHash, unknownRaw, sub.ID)
+	sub.ManagedNodes().StoreNode(unknownHash, subscription.ManagedNode{Tags: []string{"all", "unknown"}})
+
 	hkEntry, ok := pool.GetEntry(hkHash)
 	if !ok {
 		t.Fatal("hk entry missing")
@@ -54,17 +66,30 @@ func buildPreviewFilterFixture(t *testing.T) (*ControlPlaneService, string, stri
 	usEntry.SetEgressIP(netip.MustParseAddr("2.2.2.2"))
 	usEntry.SetEgressRegion("us")
 
+	unknownEntry, ok := pool.GetEntry(unknownHash)
+	if !ok {
+		t.Fatal("unknown entry missing")
+	}
+	unknownOutbound := testutil.NewNoopOutbound()
+	unknownEntry.Outbound.Store(&unknownOutbound)
+	unknownEntry.SetEgressIP(netip.MustParseAddr("3.3.3.3"))
+
 	cp := &ControlPlaneService{
 		Pool:   pool,
 		SubMgr: subMgr,
 	}
-	return cp, hkHash.Hex(), usHash.Hex()
+	return previewFilterFixture{
+		cp:          cp,
+		hkHash:      hkHash.Hex(),
+		usHash:      usHash.Hex(),
+		unknownHash: unknownHash.Hex(),
+	}
 }
 
 func TestPreviewFilter_RegionNegation(t *testing.T) {
-	cp, hkHash, usHash := buildPreviewFilterFixture(t)
+	fixture := buildPreviewFilterFixture(t)
 
-	nodes, err := cp.PreviewFilter(PreviewFilterRequest{
+	nodes, err := fixture.cp.PreviewFilter(PreviewFilterRequest{
 		PlatformSpec: &PlatformSpecFilter{
 			RegexFilters:  []string{".*"},
 			RegionFilters: []string{"!hk"},
@@ -76,18 +101,18 @@ func TestPreviewFilter_RegionNegation(t *testing.T) {
 	if len(nodes) != 1 {
 		t.Fatalf("nodes len = %d, want 1", len(nodes))
 	}
-	if nodes[0].NodeHash != usHash {
-		t.Fatalf("matched node = %s, want %s", nodes[0].NodeHash, usHash)
+	if nodes[0].NodeHash != fixture.usHash {
+		t.Fatalf("matched node = %s, want %s", nodes[0].NodeHash, fixture.usHash)
 	}
-	if nodes[0].NodeHash == hkHash {
-		t.Fatalf("hk node %s should have been excluded", hkHash)
+	if nodes[0].NodeHash == fixture.hkHash {
+		t.Fatalf("hk node %s should have been excluded", fixture.hkHash)
 	}
 }
 
 func TestPreviewFilter_RegionMixedIncludeExclude(t *testing.T) {
-	cp, hkHash, _ := buildPreviewFilterFixture(t)
+	fixture := buildPreviewFilterFixture(t)
 
-	nodes, err := cp.PreviewFilter(PreviewFilterRequest{
+	nodes, err := fixture.cp.PreviewFilter(PreviewFilterRequest{
 		PlatformSpec: &PlatformSpecFilter{
 			RegexFilters:  []string{".*"},
 			RegionFilters: []string{"hk", "!us"},
@@ -99,11 +124,11 @@ func TestPreviewFilter_RegionMixedIncludeExclude(t *testing.T) {
 	if len(nodes) != 1 {
 		t.Fatalf("nodes len = %d, want 1", len(nodes))
 	}
-	if nodes[0].NodeHash != hkHash {
-		t.Fatalf("matched node = %s, want %s", nodes[0].NodeHash, hkHash)
+	if nodes[0].NodeHash != fixture.hkHash {
+		t.Fatalf("matched node = %s, want %s", nodes[0].NodeHash, fixture.hkHash)
 	}
 
-	nodes, err = cp.PreviewFilter(PreviewFilterRequest{
+	nodes, err = fixture.cp.PreviewFilter(PreviewFilterRequest{
 		PlatformSpec: &PlatformSpecFilter{
 			RegexFilters:  []string{".*"},
 			RegionFilters: []string{"hk", "!hk"},
@@ -114,5 +139,25 @@ func TestPreviewFilter_RegionMixedIncludeExclude(t *testing.T) {
 	}
 	if len(nodes) != 0 {
 		t.Fatalf("nodes len = %d, want 0", len(nodes))
+	}
+}
+
+func TestPreviewFilter_RegionNegation_UnknownRegionExcluded(t *testing.T) {
+	fixture := buildPreviewFilterFixture(t)
+
+	nodes, err := fixture.cp.PreviewFilter(PreviewFilterRequest{
+		PlatformSpec: &PlatformSpecFilter{
+			RegexFilters:  []string{".*"},
+			RegionFilters: []string{"!hk"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreviewFilter: %v", err)
+	}
+
+	for _, node := range nodes {
+		if node.NodeHash == fixture.unknownHash {
+			t.Fatalf("node with unknown region %s should not match region filters", fixture.unknownHash)
+		}
 	}
 }
