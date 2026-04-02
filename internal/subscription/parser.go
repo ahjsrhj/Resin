@@ -1237,7 +1237,7 @@ func convertClashProxyToNode(proxy map[string]any) (ParsedNode, bool) {
 			"server_port": port,
 			"uuid":        uuid,
 		}
-		if flow := strings.TrimSpace(getString(proxy, "flow")); flow != "" {
+		if flow := normalizeVLESSFlow(getString(proxy, "flow")); flow != "" {
 			outbound["flow"] = flow
 		}
 		setTLSFromClash(outbound, proxy, "tls")
@@ -1315,7 +1315,7 @@ func convertClashProxyToNode(proxy map[string]any) (ParsedNode, bool) {
 			"password":    password,
 			"tls":         tls,
 		}
-		if ports := splitCommaList(firstNonEmpty(getString(proxy, "ports"), getString(proxy, "mport"))); len(ports) > 0 {
+		if ports := normalizeHysteriaPortList(firstNonEmpty(getString(proxy, "ports"), getString(proxy, "mport"))); len(ports) > 0 {
 			outbound["server_ports"] = ports
 		}
 		if upMbps, ok := getUint(proxy, "up", "up-mbps", "up_mbps"); ok {
@@ -1486,7 +1486,7 @@ func convertClashProxyToNode(proxy map[string]any) (ParsedNode, bool) {
 		if obfs := strings.TrimSpace(getString(proxy, "obfs")); obfs != "" {
 			outbound["obfs"] = obfs
 		}
-		if ports := splitCommaList(getString(proxy, "ports")); len(ports) > 0 {
+		if ports := normalizeHysteriaPortList(getString(proxy, "ports")); len(ports) > 0 {
 			outbound["server_ports"] = ports
 		}
 		if recvWindowConn, ok := getUint(proxy, "recv-window-conn", "recv_window_conn"); ok {
@@ -1708,6 +1708,55 @@ func splitCommaList(raw string) []string {
 	return out
 }
 
+func normalizeHysteriaPortList(raw string) []string {
+	ports := splitCommaList(raw)
+	if len(ports) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ports))
+	for _, port := range ports {
+		out = append(out, normalizeHysteriaPortRange(port))
+	}
+	return out
+}
+
+func normalizeHysteriaPortRange(raw string) string {
+	portRange := strings.TrimSpace(raw)
+	if portRange == "" || strings.Contains(portRange, ":") {
+		return portRange
+	}
+	compact := strings.ReplaceAll(portRange, " ", "")
+	if strings.Count(compact, "-") != 1 {
+		return portRange
+	}
+	start, end, ok := strings.Cut(compact, "-")
+	if !ok {
+		return portRange
+	}
+	if start != "" && !isDecimalString(start) {
+		return portRange
+	}
+	if end != "" && !isDecimalString(end) {
+		return portRange
+	}
+	if start == "" && end == "" {
+		return portRange
+	}
+	return start + ":" + end
+}
+
+func isDecimalString(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	for _, r := range raw {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func normalizeHysteriaRate(raw string) string {
 	value := strings.TrimSpace(raw)
 	if value == "" {
@@ -1720,6 +1769,18 @@ func normalizeHysteriaRate(raw string) string {
 		return value + " Mbps"
 	}
 	return value
+}
+
+func normalizeVLESSFlow(raw string) string {
+	flow := strings.TrimSpace(raw)
+	switch strings.ToLower(flow) {
+	case "", "none", "null":
+		return ""
+	case "xtls-rprx-vision":
+		return "xtls-rprx-vision"
+	default:
+		return ""
+	}
 }
 
 func normalizeShadowsocksMethod(raw string) string {
@@ -3063,7 +3124,7 @@ func parseVlessURI(uri string) (ParsedNode, bool) {
 		"server_port": port,
 		"uuid":        uuid,
 	}
-	if flow := strings.TrimSpace(query.Get("flow")); flow != "" {
+	if flow := normalizeVLESSFlow(query.Get("flow")); flow != "" {
 		outbound["flow"] = flow
 	}
 
@@ -3319,7 +3380,7 @@ func parseHysteria2URI(uri string) (ParsedNode, bool) {
 		"password":    password,
 		"tls":         tls,
 	}
-	if ports := splitCommaList(firstNonEmpty(query.Get("ports"), query.Get("mport"))); len(ports) > 0 {
+	if ports := normalizeHysteriaPortList(firstNonEmpty(query.Get("ports"), query.Get("mport"))); len(ports) > 0 {
 		outbound["server_ports"] = ports
 	}
 	if upMbps, ok := parsePositiveUint64(
@@ -3690,8 +3751,48 @@ func setTLSFromClash(outbound map[string]any, proxy map[string]any, key string) 
 		getString(proxy, "client_fingerprint"),
 		getString(proxy, "fp"),
 	))
+	applyClashRealityToTLS(tls, proxy)
 	applyTLSCertificateFromClash(tls, proxy)
 	outbound["tls"] = tls
+}
+
+func applyClashRealityToTLS(tls map[string]any, proxy map[string]any) {
+	var realitySource map[string]any
+	if realityOpts, ok := getMap(proxy, "reality-opts", "reality_opts"); ok {
+		realitySource = realityOpts
+	} else {
+		realitySource = proxy
+	}
+
+	publicKey := strings.TrimSpace(firstNonEmpty(
+		getString(realitySource, "public-key"),
+		getString(realitySource, "public_key"),
+		getString(realitySource, "pbk"),
+	))
+	shortID := strings.TrimSpace(firstNonEmpty(
+		getString(realitySource, "short-id"),
+		getString(realitySource, "short_id"),
+		getString(realitySource, "sid"),
+	))
+	if publicKey == "" && shortID == "" {
+		return
+	}
+
+	reality := map[string]any{"enabled": true}
+	if publicKey != "" {
+		reality["public_key"] = publicKey
+	}
+	if shortID != "" {
+		reality["short_id"] = shortID
+	}
+	tls["reality"] = reality
+
+	if _, hasUTLS := tls["utls"]; !hasUTLS {
+		tls["utls"] = map[string]any{
+			"enabled":     true,
+			"fingerprint": "chrome",
+		}
+	}
 }
 
 func applyUTLSFromValue(tls map[string]any, rawFingerprint string) {
@@ -3872,6 +3973,7 @@ func setV2RayTransportFromClash(outbound map[string]any, proxy map[string]any) b
 		return true
 	case "ws":
 		setWSTransportFromClash(outbound, proxy)
+		normalizeTLSALPNForWSTransport(outbound)
 		return true
 	case "grpc":
 		transport := map[string]any{"type": "grpc"}
@@ -3957,6 +4059,7 @@ func setV2RayTransportFromURI(outbound map[string]any, network string, rawPath s
 			transport["headers"] = map[string]any{"Host": host}
 		}
 		outbound["transport"] = transport
+		normalizeTLSALPNForWSTransport(outbound)
 		return true
 	case "grpc":
 		transport := map[string]any{"type": "grpc"}
@@ -3998,6 +4101,39 @@ func setV2RayTransportFromURI(outbound map[string]any, network string, rawPath s
 	default:
 		return false
 	}
+}
+
+func normalizeTLSALPNForWSTransport(outbound map[string]any) {
+	tls, ok := outbound["tls"].(map[string]any)
+	if !ok {
+		return
+	}
+	rawALPN, ok := tls["alpn"]
+	if !ok {
+		return
+	}
+
+	var keep []string
+	switch values := rawALPN.(type) {
+	case []string:
+		for _, value := range values {
+			if strings.EqualFold(strings.TrimSpace(value), "http/1.1") {
+				keep = append(keep, "http/1.1")
+			}
+		}
+	case []any:
+		for _, value := range values {
+			if strings.EqualFold(strings.TrimSpace(fmt.Sprint(value)), "http/1.1") {
+				keep = append(keep, "http/1.1")
+			}
+		}
+	}
+
+	if len(keep) == 0 {
+		delete(tls, "alpn")
+		return
+	}
+	tls["alpn"] = keep
 }
 
 func firstNonEmptyValue(value any) string {
