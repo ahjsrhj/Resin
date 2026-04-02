@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Resinat/Resin/internal/config"
+	"github.com/Resinat/Resin/internal/model"
 	"github.com/Resinat/Resin/internal/node"
 	"github.com/Resinat/Resin/internal/probe"
 	"github.com/Resinat/Resin/internal/service"
@@ -53,6 +54,20 @@ func markNodeHealthyForNodeListTest(t *testing.T, cp *service.ControlPlaneServic
 	ob := testutil.NewNoopOutbound()
 	entry.Outbound.Store(&ob)
 	entry.CircuitOpenSince.Store(0)
+}
+
+func markNodeRoutableForLeaseTest(t *testing.T, cp *service.ControlPlaneService, raw string) {
+	t.Helper()
+
+	markNodeHealthyForNodeListTest(t, cp, raw)
+	hash := node.HashFromRawOptions([]byte(raw))
+	entry, ok := cp.Pool.GetEntry(hash)
+	if !ok {
+		t.Fatalf("node %s missing after add", hash.Hex())
+	}
+	entry.LatencyTable.Update("example.com", 25*time.Millisecond, 10*time.Minute)
+	cp.Pool.RecordResult(hash, true)
+	cp.Pool.NotifyNodeDirty(hash)
 }
 
 func TestHandleListNodes_TagKeywordFiltersByNodeName(t *testing.T) {
@@ -437,5 +452,88 @@ func TestHandleSetSubscriptionNodeDisabled(t *testing.T) {
 	}
 	if tag["subscription_enabled"] != false {
 		t.Fatalf("tag subscription_enabled: got %v, want false", tag["subscription_enabled"])
+	}
+}
+
+func TestHandleSetSubscriptionNodeDisabled_ReconcilesLeaseImmediately(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+
+	platformID := mustCreatePlatform(t, srv, "lease-reconcile-api")
+	sub := subscription.NewSubscription("11111111-1111-1111-1111-111111111111", "sub-a", "https://example.com/a", true, false)
+	cp.SubMgr.Register(sub)
+
+	oldRaw := `{"type":"ss","server":"8.8.8.8","port":443}`
+	newRaw := `{"type":"ss","server":"9.9.9.9","port":443}`
+	oldHash := node.HashFromRawOptions([]byte(oldRaw))
+	newHash := node.HashFromRawOptions([]byte(newRaw))
+
+	addNodeForNodeListTestWithTag(t, cp, sub, oldRaw, "203.0.113.120", "old-tag")
+	addNodeForNodeListTestWithTag(t, cp, sub, newRaw, "203.0.113.121", "new-tag")
+	markNodeRoutableForLeaseTest(t, cp, oldRaw)
+	markNodeRoutableForLeaseTest(t, cp, newRaw)
+
+	now := time.Now().UnixNano()
+	if err := cp.Router.UpsertLease(model.Lease{
+		PlatformID:     platformID,
+		Account:        "alice",
+		NodeHash:       oldHash.Hex(),
+		EgressIP:       "203.0.113.120",
+		CreatedAtNs:    now - int64(time.Minute),
+		ExpiryNs:       now + int64(time.Hour),
+		LastAccessedNs: now,
+	}); err != nil {
+		t.Fatalf("UpsertLease: %v", err)
+	}
+
+	rec := doJSONRequest(
+		t,
+		srv,
+		http.MethodPost,
+		"/api/v1/subscriptions/"+sub.ID+"/nodes/"+oldHash.Hex()+"/actions/set-disabled",
+		map[string]any{"disabled": true},
+		true,
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set-disabled status: got %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	getLeaseRec := doJSONRequest(
+		t,
+		srv,
+		http.MethodGet,
+		"/api/v1/platforms/"+platformID+"/leases/alice",
+		nil,
+		true,
+	)
+	if getLeaseRec.Code != http.StatusOK {
+		t.Fatalf("get lease status: got %d, want %d, body=%s", getLeaseRec.Code, http.StatusOK, getLeaseRec.Body.String())
+	}
+	getLeaseBody := decodeJSONMap(t, getLeaseRec)
+	if getLeaseBody["node_hash"] != newHash.Hex() {
+		t.Fatalf("get lease node_hash: got %v, want %s", getLeaseBody["node_hash"], newHash.Hex())
+	}
+
+	listLeaseRec := doJSONRequest(
+		t,
+		srv,
+		http.MethodGet,
+		"/api/v1/platforms/"+platformID+"/leases?account=alice",
+		nil,
+		true,
+	)
+	if listLeaseRec.Code != http.StatusOK {
+		t.Fatalf("list lease status: got %d, want %d, body=%s", listLeaseRec.Code, http.StatusOK, listLeaseRec.Body.String())
+	}
+	listLeaseBody := decodeJSONMap(t, listLeaseRec)
+	items, ok := listLeaseBody["items"].([]any)
+	if !ok {
+		t.Fatalf("leases.items type: got %T", listLeaseBody["items"])
+	}
+	if len(items) != 1 {
+		t.Fatalf("leases.items len: got %d, want 1", len(items))
+	}
+	item := items[0].(map[string]any)
+	if item["node_hash"] != newHash.Hex() {
+		t.Fatalf("list lease node_hash: got %v, want %s", item["node_hash"], newHash.Hex())
 	}
 }

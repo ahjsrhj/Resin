@@ -291,7 +291,11 @@ func (s *ControlPlaneService) SetSubscriptionNodeDisabled(subscriptionID, hashSt
 	}
 
 	s.Pool.NotifyNodeDirty(h)
-	if s.ProbeMgr != nil && wasGloballyDisabled && !s.Pool.IsNodeDisabled(h) {
+	nowGloballyDisabled := s.Pool.IsNodeDisabled(h)
+	if disabled && s.Router != nil && !wasGloballyDisabled && nowGloballyDisabled {
+		s.Router.ReconcileLeasesForNode(h)
+	}
+	if s.ProbeMgr != nil && wasGloballyDisabled && !nowGloballyDisabled {
 		s.ProbeMgr.TriggerImmediateEgressProbe(h)
 		s.ProbeMgr.TriggerImmediateLatencyProbe(h)
 	}

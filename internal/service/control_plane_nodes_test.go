@@ -8,9 +8,11 @@ import (
 
 	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/geoip"
+	"github.com/Resinat/Resin/internal/model"
 	"github.com/Resinat/Resin/internal/node"
 	"github.com/Resinat/Resin/internal/platform"
 	"github.com/Resinat/Resin/internal/probe"
+	"github.com/Resinat/Resin/internal/routing"
 	"github.com/Resinat/Resin/internal/subscription"
 	"github.com/Resinat/Resin/internal/testutil"
 	"github.com/Resinat/Resin/internal/topology"
@@ -641,6 +643,159 @@ func TestSetSubscriptionNodeDisabled_Errors(t *testing.T) {
 
 	if err := cp.SetSubscriptionNodeDisabled(sub.ID, hash.Hex(), true); err == nil {
 		t.Fatal("evicted subscription node should fail")
+	}
+}
+
+func TestSetSubscriptionNodeDisabled_ReconcilesLeaseToReplacement(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	pool := newNodeListTestPool(subMgr)
+	plat := platform.NewPlatform("plat-lease-reconcile", "plat-lease-reconcile", nil, nil)
+	plat.StickyTTLNs = int64(time.Hour)
+	pool.RegisterPlatform(plat)
+
+	sub := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	subMgr.Register(sub)
+
+	oldHash := addRoutableNodeForSubscriptionWithTag(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"ss","server":"10.0.0.1","port":443}`),
+		"203.0.113.90",
+		"old-tag",
+	)
+	newHash := addRoutableNodeForSubscriptionWithTag(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"ss","server":"10.0.0.2","port":443}`),
+		"203.0.113.91",
+		"new-tag",
+	)
+
+	router := routing.NewRouter(routing.RouterConfig{
+		Pool:            pool,
+		Authorities:     func() []string { return []string{"example.com"} },
+		P2CWindow:       func() time.Duration { return 10 * time.Minute },
+		NodeTagResolver: pool.ResolveNodeDisplayTag,
+	})
+	cp := &ControlPlaneService{
+		Pool:   pool,
+		SubMgr: subMgr,
+		Router: router,
+		GeoIP:  &geoip.Service{},
+	}
+
+	now := time.Now().UnixNano()
+	if err := cp.Router.UpsertLease(model.Lease{
+		PlatformID:     plat.ID,
+		Account:        "alice",
+		NodeHash:       oldHash.Hex(),
+		EgressIP:       "203.0.113.90",
+		CreatedAtNs:    now - int64(time.Minute),
+		ExpiryNs:       now + int64(time.Hour),
+		LastAccessedNs: now,
+	}); err != nil {
+		t.Fatalf("UpsertLease: %v", err)
+	}
+
+	if err := cp.SetSubscriptionNodeDisabled(sub.ID, oldHash.Hex(), true); err != nil {
+		t.Fatalf("SetSubscriptionNodeDisabled: %v", err)
+	}
+
+	lease := cp.Router.ReadLease(model.LeaseKey{PlatformID: plat.ID, Account: "alice"})
+	if lease == nil {
+		t.Fatal("expected lease to be migrated to replacement node")
+	}
+	if lease.NodeHash != newHash.Hex() {
+		t.Fatalf("lease node_hash: got %q, want %q", lease.NodeHash, newHash.Hex())
+	}
+
+	gotLease, err := cp.GetLease(plat.ID, "alice")
+	if err != nil {
+		t.Fatalf("GetLease: %v", err)
+	}
+	if gotLease.NodeHash != newHash.Hex() {
+		t.Fatalf("GetLease node_hash: got %q, want %q", gotLease.NodeHash, newHash.Hex())
+	}
+
+	leases, err := cp.ListLeases(plat.ID)
+	if err != nil {
+		t.Fatalf("ListLeases: %v", err)
+	}
+	if len(leases) != 1 {
+		t.Fatalf("ListLeases len: got %d, want 1", len(leases))
+	}
+	if leases[0].NodeHash != newHash.Hex() {
+		t.Fatalf("ListLeases node_hash: got %q, want %q", leases[0].NodeHash, newHash.Hex())
+	}
+}
+
+func TestSetSubscriptionNodeDisabled_RemovesLeaseWithoutReplacement(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	pool := newNodeListTestPool(subMgr)
+	plat := platform.NewPlatform("plat-lease-remove", "plat-lease-remove", nil, nil)
+	plat.StickyTTLNs = int64(time.Hour)
+	pool.RegisterPlatform(plat)
+
+	sub := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	subMgr.Register(sub)
+
+	hash := addRoutableNodeForSubscriptionWithTag(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"ss","server":"10.0.0.3","port":443}`),
+		"203.0.113.92",
+		"only-tag",
+	)
+
+	router := routing.NewRouter(routing.RouterConfig{
+		Pool:            pool,
+		Authorities:     func() []string { return []string{"example.com"} },
+		P2CWindow:       func() time.Duration { return 10 * time.Minute },
+		NodeTagResolver: pool.ResolveNodeDisplayTag,
+	})
+	cp := &ControlPlaneService{
+		Pool:   pool,
+		SubMgr: subMgr,
+		Router: router,
+		GeoIP:  &geoip.Service{},
+	}
+
+	now := time.Now().UnixNano()
+	if err := cp.Router.UpsertLease(model.Lease{
+		PlatformID:     plat.ID,
+		Account:        "bob",
+		NodeHash:       hash.Hex(),
+		EgressIP:       "203.0.113.92",
+		CreatedAtNs:    now - int64(time.Minute),
+		ExpiryNs:       now + int64(time.Hour),
+		LastAccessedNs: now,
+	}); err != nil {
+		t.Fatalf("UpsertLease: %v", err)
+	}
+
+	if err := cp.SetSubscriptionNodeDisabled(sub.ID, hash.Hex(), true); err != nil {
+		t.Fatalf("SetSubscriptionNodeDisabled: %v", err)
+	}
+
+	if lease := cp.Router.ReadLease(model.LeaseKey{PlatformID: plat.ID, Account: "bob"}); lease != nil {
+		t.Fatalf("expected lease removal, got %+v", lease)
+	}
+
+	if _, err := cp.GetLease(plat.ID, "bob"); err == nil {
+		t.Fatal("expected GetLease to fail after lease removal")
+	} else {
+		assertServiceErrorCode(t, err, "NOT_FOUND")
+	}
+
+	leases, err := cp.ListLeases(plat.ID)
+	if err != nil {
+		t.Fatalf("ListLeases: %v", err)
+	}
+	if len(leases) != 0 {
+		t.Fatalf("ListLeases len: got %d, want 0", len(leases))
 	}
 }
 

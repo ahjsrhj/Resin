@@ -254,8 +254,7 @@ func (r *Router) tryLeaseHit(
 	current Lease,
 	nowNs int64,
 ) (Lease, RouteResult, bool) {
-	entry, ok := r.pool.GetEntry(current.NodeHash)
-	if !ok || !plat.View().Contains(current.NodeHash) || entry.GetEgressIP() != current.EgressIP {
+	if !r.isLeaseRoutable(plat, current) {
 		return Lease{}, RouteResult{}, false
 	}
 
@@ -273,6 +272,17 @@ func (r *Router) tryLeaseHit(
 		EgressIP:     current.EgressIP,
 		LeaseCreated: false,
 	}, true
+}
+
+func (r *Router) isLeaseRoutable(plat *platform.Platform, current Lease) bool {
+	if plat == nil {
+		return false
+	}
+	entry, ok := r.pool.GetEntry(current.NodeHash)
+	if !ok {
+		return false
+	}
+	return plat.View().Contains(current.NodeHash) && entry.GetEgressIP() == current.EgressIP
 }
 
 func (r *Router) tryLeaseSameIPRotation(
@@ -632,4 +642,157 @@ func (r *Router) DeleteAllLeases(platformID string) int {
 		return true
 	})
 	return count
+}
+
+type leaseReconcileTarget struct {
+	platformID string
+	platform   *platform.Platform
+	state      *PlatformRoutingState
+	account    string
+	lease      Lease
+}
+
+// ReconcileLeasesForNode re-checks sticky leases bound to the given node hash.
+// If the node is no longer routable for a platform, leases are rotated to a
+// same-IP candidate when possible, otherwise recreated or removed.
+func (r *Router) ReconcileLeasesForNode(hash node.Hash) {
+	targets := r.snapshotLeaseReconcileTargets(hash)
+	if len(targets) == 0 {
+		return
+	}
+
+	now := time.Now()
+	nowNs := now.UnixNano()
+	for _, target := range targets {
+		r.reconcileLeaseTarget(target, now, nowNs)
+	}
+}
+
+func (r *Router) snapshotLeaseReconcileTargets(hash node.Hash) []leaseReconcileTarget {
+	targets := make([]leaseReconcileTarget, 0)
+	r.states.Range(func(platformID string, state *PlatformRoutingState) bool {
+		plat, ok := r.pool.GetPlatform(platformID)
+		if !ok || plat == nil {
+			return true
+		}
+		state.Leases.Range(func(account string, lease Lease) bool {
+			if lease.NodeHash == hash {
+				targets = append(targets, leaseReconcileTarget{
+					platformID: platformID,
+					platform:   plat,
+					state:      state,
+					account:    account,
+					lease:      lease,
+				})
+			}
+			return true
+		})
+		return true
+	})
+	return targets
+}
+
+func (r *Router) reconcileLeaseTarget(target leaseReconcileTarget, now time.Time, nowNs int64) {
+	var (
+		emitExpire  *LeaseEvent
+		emitRemove  *LeaseEvent
+		emitReplace *LeaseEvent
+		emitCreate  *LeaseEvent
+	)
+
+	_, _ = target.state.Leases.leases.Compute(target.account, func(current Lease, loaded bool) (Lease, xsync.ComputeOp) {
+		if !loaded || current != target.lease {
+			return current, xsync.CancelOp
+		}
+		if current.IsExpired(now) {
+			target.state.Leases.stats.Dec(current.EgressIP)
+			emitExpire = &LeaseEvent{
+				Type:        LeaseExpire,
+				PlatformID:  target.platformID,
+				Account:     target.account,
+				NodeHash:    current.NodeHash,
+				EgressIP:    current.EgressIP,
+				CreatedAtNs: current.CreatedAtNs,
+			}
+			return current, xsync.DeleteOp
+		}
+		if r.isLeaseRoutable(target.platform, current) {
+			return current, xsync.CancelOp
+		}
+
+		if rotatedLease, ok := r.tryReconcileSameIPRotation(target, current); ok {
+			emitReplace = &LeaseEvent{
+				Type:       LeaseReplace,
+				PlatformID: target.platformID,
+				Account:    target.account,
+				NodeHash:   rotatedLease.NodeHash,
+				EgressIP:   rotatedLease.EgressIP,
+			}
+			return rotatedLease, xsync.UpdateOp
+		}
+
+		newLease, _, err := r.createLease(target.platform, target.state, "", now, nowNs)
+		if err != nil {
+			target.state.Leases.stats.Dec(current.EgressIP)
+			emitRemove = &LeaseEvent{
+				Type:        LeaseRemove,
+				PlatformID:  target.platformID,
+				Account:     target.account,
+				NodeHash:    current.NodeHash,
+				EgressIP:    current.EgressIP,
+				CreatedAtNs: current.CreatedAtNs,
+			}
+			return current, xsync.DeleteOp
+		}
+
+		target.state.Leases.stats.Dec(current.EgressIP)
+		target.state.Leases.stats.Inc(newLease.EgressIP)
+		emitRemove = &LeaseEvent{
+			Type:        LeaseRemove,
+			PlatformID:  target.platformID,
+			Account:     target.account,
+			NodeHash:    current.NodeHash,
+			EgressIP:    current.EgressIP,
+			CreatedAtNs: current.CreatedAtNs,
+		}
+		emitCreate = &LeaseEvent{
+			Type:       LeaseCreate,
+			PlatformID: target.platformID,
+			Account:    target.account,
+			NodeHash:   newLease.NodeHash,
+			EgressIP:   newLease.EgressIP,
+		}
+		return newLease, xsync.UpdateOp
+	})
+
+	if emitExpire != nil {
+		r.emitLeaseEvent(*emitExpire)
+	}
+	if emitRemove != nil {
+		r.emitLeaseEvent(*emitRemove)
+	}
+	if emitReplace != nil {
+		r.emitLeaseEvent(*emitReplace)
+	}
+	if emitCreate != nil {
+		r.emitLeaseEvent(*emitCreate)
+	}
+}
+
+func (r *Router) tryReconcileSameIPRotation(target leaseReconcileTarget, current Lease) (Lease, bool) {
+	bestHash, ok := chooseSameIPRotationCandidate(
+		target.platform,
+		r.pool,
+		current.EgressIP,
+		"",
+		r.authorities(),
+		r.p2cWindow(),
+	)
+	if !ok || bestHash == current.NodeHash {
+		return Lease{}, false
+	}
+
+	newLease := current
+	newLease.NodeHash = bestHash
+	return newLease, true
 }
