@@ -35,6 +35,7 @@ type ReverseProxyConfig struct {
 	MetricsSink       MetricsEventSink
 	OutboundTransport OutboundTransportConfig
 	TransportPool     *OutboundTransportPool
+	ChainPool         *ChainedOutboundPool
 }
 
 // ReverseProxy implements an HTTP reverse proxy.
@@ -54,6 +55,7 @@ type ReverseProxy struct {
 	transportConfig   OutboundTransportConfig
 	transportPool     *OutboundTransportPool
 	transportPoolOnce sync.Once
+	chainPool         *ChainedOutboundPool
 }
 
 // NewReverseProxy creates a new reverse proxy handler.
@@ -66,6 +68,10 @@ func NewReverseProxy(cfg ReverseProxyConfig) *ReverseProxy {
 	transportPool := cfg.TransportPool
 	if transportPool == nil {
 		transportPool = NewOutboundTransportPool(transportCfg)
+	}
+	chainPool := cfg.ChainPool
+	if chainPool == nil {
+		chainPool = NewChainedOutboundPool()
 	}
 	authVersion := config.NormalizeAuthVersion(cfg.AuthVersion)
 	if authVersion == "" {
@@ -83,6 +89,7 @@ func NewReverseProxy(cfg ReverseProxyConfig) *ReverseProxy {
 		metricsSink:     cfg.MetricsSink,
 		transportConfig: transportCfg,
 		transportPool:   transportPool,
+		chainPool:       chainPool,
 	}
 }
 
@@ -102,7 +109,7 @@ func (p *ReverseProxy) outboundHTTPTransport(routed routedOutbound) *http.Transp
 			p.transportPool = NewOutboundTransportPool(p.transportConfig)
 		}
 	})
-	return p.transportPool.Get(routed.Route.NodeHash, routed.Outbound, p.metricsSink)
+	return p.transportPool.Get(routed.TransportKey, routed.Outbound, p.metricsSink)
 }
 
 // parsedPath holds the result of parsing a reverse proxy request path.
@@ -383,7 +390,7 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	routed, routeErr := resolveRoutedOutbound(p.router, p.pool, parsed.PlatformName, account, parsed.Host)
+	routed, routeErr := resolveRoutedOutbound(p.router, p.pool, p.platLook, p.chainPool, parsed.PlatformName, account, parsed.Host)
 	if routeErr != nil {
 		lifecycle.setProxyError(routeErr)
 		lifecycle.setHTTPStatus(routeErr.HTTPCode)
@@ -394,7 +401,9 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	nodeHashRaw := routed.Route.NodeHash
 	domain := netutil.ExtractDomain(parsed.Host)
-	go p.health.RecordLatency(nodeHashRaw, domain, nil)
+	if routed.PassiveHealth {
+		go p.health.RecordLatency(nodeHashRaw, domain, nil)
+	}
 
 	target, targetErr := buildReverseTargetURL(parsed, r.URL.RawQuery)
 	if targetErr != nil {
@@ -419,7 +428,7 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			reqCtx := httptrace.WithClientTrace(req.Context(), upstreamTrace.clientTrace())
 
 			// Add httptrace for TLS latency measurement on HTTPS.
-			if parsed.Protocol == "https" {
+			if parsed.Protocol == "https" && routed.PassiveHealth {
 				reporter := newReverseLatencyReporter(p.health, nodeHashRaw, domain)
 				reqCtx = httptrace.WithClientTrace(reqCtx, reporter.clientTrace())
 			}
@@ -439,7 +448,9 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			lifecycle.setUpstreamError("reverse_roundtrip", err)
 			lifecycle.setNetOK(false)
 			lifecycle.setHTTPStatus(proxyErr.HTTPCode)
-			go p.health.RecordResult(nodeHashRaw, false)
+			if routed.PassiveHealth {
+				go p.health.RecordResult(nodeHashRaw, false)
+			}
 			writeProxyError(rw, proxyErr)
 		},
 		ModifyResponse: func(resp *http.Response) error {
@@ -462,7 +473,9 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					lifecycle.setRespHeadersCaptured(respHeaders, respHeadersLen, respHeadersTruncated)
 				}
 				lifecycle.setNetOK(true)
-				go p.health.RecordResult(nodeHashRaw, true)
+				if routed.PassiveHealth {
+					go p.health.RecordResult(nodeHashRaw, true)
+				}
 				return nil
 			}
 			if resp.Body != nil && resp.Body != http.NoBody {
@@ -486,7 +499,9 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// (client abort vs upstream reset vs network blip), and the added
 			// complexity is not worth it for the current phase.
 			lifecycle.setNetOK(true)
-			go p.health.RecordResult(nodeHashRaw, true)
+			if routed.PassiveHealth {
+				go p.health.RecordResult(nodeHashRaw, true)
+			}
 			return nil
 		},
 	}

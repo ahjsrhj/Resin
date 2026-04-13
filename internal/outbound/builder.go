@@ -35,6 +35,7 @@ type SingboxBuilder struct {
 	registry            *sbOutbound.Registry
 	ctx                 context.Context
 	logFactory          log.Factory
+	outboundManager     *sbOutbound.Manager
 	dnsTransportManager *dns.TransportManager
 	dnsRouter           *dns.Router
 }
@@ -108,6 +109,7 @@ func NewSingboxBuilder() (*SingboxBuilder, error) {
 		registry:            registry,
 		ctx:                 ctx,
 		logFactory:          logFactory,
+		outboundManager:     outboundMgr,
 		dnsTransportManager: dnsTransportMgr,
 		dnsRouter:           dnsRouter,
 	}, nil

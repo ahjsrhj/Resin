@@ -43,6 +43,7 @@ type resinApp struct {
 	inboundSrv     *http.Server
 	inboundLn      net.Listener
 	transportPool  *proxy.OutboundTransportPool
+	chainPool      *proxy.ChainedOutboundPool
 }
 
 func run() error {
@@ -132,7 +133,10 @@ func (a *resinApp) initTopologyRuntime(engine *state.StateEngine) (*netutil.Retr
 		a.onProbeConnectionLifecycle,
 		func(hash node.Hash) {
 			if a.transportPool != nil {
-				a.transportPool.Evict(hash)
+				a.transportPool.EvictNode(hash)
+			}
+			if a.chainPool != nil {
+				a.chainPool.EvictNode(hash)
 			}
 		},
 	)
@@ -402,17 +406,22 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 	if a.transportPool == nil {
 		a.transportPool = proxy.NewOutboundTransportPool(outboundTransportCfg)
 	}
+	if a.chainPool == nil {
+		a.chainPool = proxy.NewChainedOutboundPool()
+	}
 
 	forwardProxy := proxy.NewForwardProxy(proxy.ForwardProxyConfig{
 		ProxyToken:        a.envCfg.ProxyToken,
 		AuthVersion:       string(a.envCfg.AuthVersion),
 		Router:            a.topoRuntime.router,
 		Pool:              a.topoRuntime.pool,
+		PlatformLookup:    a.topoRuntime.pool,
 		Health:            a.topoRuntime.pool,
 		Events:            proxyEvents,
 		MetricsSink:       a.metricsManager,
 		OutboundTransport: outboundTransportCfg,
 		TransportPool:     a.transportPool,
+		ChainPool:         a.chainPool,
 	})
 
 	reverseProxy := proxy.NewReverseProxy(proxy.ReverseProxyConfig{
@@ -427,6 +436,7 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		MetricsSink:       a.metricsManager,
 		OutboundTransport: outboundTransportCfg,
 		TransportPool:     a.transportPool,
+		ChainPool:         a.chainPool,
 	})
 
 	inboundHandler := newInboundMux(
@@ -524,6 +534,10 @@ func (a *resinApp) shutdown(ctx context.Context) {
 	if a.transportPool != nil {
 		a.transportPool.CloseAll()
 		log.Println("Outbound transport pool closed")
+	}
+	if a.chainPool != nil {
+		a.chainPool.CloseAll()
+		log.Println("Chained outbound pool closed")
 	}
 
 	// Stop in order: event sources first, then sinks, then persistence.

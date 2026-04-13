@@ -17,6 +17,7 @@ import { useI18n } from "../../i18n";
 import { formatApiErrorMessage } from "../../lib/error-message";
 import { formatGoDuration, formatRelativeTime } from "../../lib/time";
 import { createPlatform, listPlatforms } from "./api";
+import { PlatformEntryNodeSelect } from "./PlatformEntryNodeSelect";
 import {
   allocationPolicies,
   allocationPolicyLabel,
@@ -79,6 +80,7 @@ export function PlatformPage() {
     defaultValues: defaultPlatformFormValues,
   });
   const createEmptyAccountBehavior = createForm.watch("reverse_proxy_empty_account_behavior");
+  const createEntryNodeHash = createForm.watch("entry_node_hash");
 
   const createMutation = useMutation({
     mutationFn: createPlatform,
@@ -253,12 +255,29 @@ export function PlatformPage() {
                 </p>
               </div>
 
-              <div className="field-group">
-                <label className="field-label" htmlFor="create-sticky">
-                  {t("租约保持时长（可选）")}
-                </label>
-                <Input id="create-sticky" placeholder={t("例如 168h")} {...createForm.register("sticky_ttl")} />
-              </div>
+                <div className="field-group">
+                  <label className="field-label" htmlFor="create-sticky">
+                    {t("租约保持时长（可选）")}
+                  </label>
+                  <Input id="create-sticky" placeholder={t("例如 168h")} {...createForm.register("sticky_ttl")} />
+                </div>
+
+                <div className="field-group">
+                  <label className="field-label" htmlFor="create-entry-node">
+                    {t("入口节点")}
+                  </label>
+                  <PlatformEntryNodeSelect
+                    id="create-entry-node"
+                    value={createEntryNodeHash}
+                    invalid={Boolean(createForm.formState.errors.entry_node_hash)}
+                    onChange={(value) => {
+                      createForm.setValue("entry_node_hash", value, { shouldDirty: true, shouldValidate: true });
+                    }}
+                  />
+                  {createForm.formState.errors.entry_node_hash?.message ? (
+                    <p className="field-error">{t(createForm.formState.errors.entry_node_hash.message)}</p>
+                  ) : null}
+                </div>
 
               <div className="field-group">
                 <label className="field-label" htmlFor="create-miss-action">

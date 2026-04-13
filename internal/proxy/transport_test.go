@@ -27,8 +27,8 @@ func TestOutboundTransportPool_ReusesByNodeHash(t *testing.T) {
 	pool := newOutboundTransportPool()
 	hash := node.Hash{1}
 
-	t1 := pool.Get(hash, &noopOutbound{}, nil)
-	t2 := pool.Get(hash, &noopOutbound{}, nil)
+	t1 := pool.Get(directTransportKey(hash), &noopOutbound{}, nil)
+	t2 := pool.Get(directTransportKey(hash), &noopOutbound{}, nil)
 
 	if t1 != t2 {
 		t.Fatal("expected same transport instance for identical node hash")
@@ -41,8 +41,8 @@ func TestOutboundTransportPool_SplitsByNodeHash(t *testing.T) {
 	hash1 := node.Hash{1}
 	hash2 := node.Hash{2}
 
-	base := pool.Get(hash1, ob, nil)
-	byNodeHash := pool.Get(hash2, ob, nil)
+	base := pool.Get(directTransportKey(hash1), ob, nil)
+	byNodeHash := pool.Get(directTransportKey(hash2), ob, nil)
 	if base == byNodeHash {
 		t.Fatal("expected different transport for different node hash")
 	}
@@ -53,7 +53,7 @@ func TestOutboundTransportPool_UsesKeepAliveTransport(t *testing.T) {
 	ob := &noopOutbound{}
 	hash := node.Hash{1}
 
-	transport := pool.Get(hash, ob, nil)
+	transport := pool.Get(directTransportKey(hash), ob, nil)
 	if transport.DisableKeepAlives {
 		t.Fatal("expected keep-alive enabled transport")
 	}
@@ -64,9 +64,9 @@ func TestOutboundTransportPool_EvictRemovesNodeTransport(t *testing.T) {
 	hash := node.Hash{1}
 	ob := &noopOutbound{}
 
-	t1 := pool.Get(hash, ob, nil)
-	pool.Evict(hash)
-	t2 := pool.Get(hash, ob, nil)
+	t1 := pool.Get(directTransportKey(hash), ob, nil)
+	pool.EvictNode(hash)
+	t2 := pool.Get(directTransportKey(hash), ob, nil)
 
 	if t1 == t2 {
 		t.Fatal("expected a new transport after evict")
@@ -82,7 +82,7 @@ func TestOutboundTransportPool_AppliesConfiguredLimits(t *testing.T) {
 	ob := &noopOutbound{}
 	hash := node.Hash{1}
 
-	transport := pool.Get(hash, ob, nil)
+	transport := pool.Get(directTransportKey(hash), ob, nil)
 	if transport.MaxIdleConns != 9 {
 		t.Fatalf("MaxIdleConns: got %d, want %d", transport.MaxIdleConns, 9)
 	}
@@ -100,12 +100,12 @@ func TestOutboundTransportPool_CloseAllClearsEntries(t *testing.T) {
 
 	hashA := node.Hash{1}
 	hashB := node.Hash{2}
-	t1 := pool.Get(hashA, ob, nil)
-	_ = pool.Get(hashB, ob, nil)
+	t1 := pool.Get(directTransportKey(hashA), ob, nil)
+	_ = pool.Get(directTransportKey(hashB), ob, nil)
 
 	pool.CloseAll()
 
-	t2 := pool.Get(hashA, ob, nil)
+	t2 := pool.Get(directTransportKey(hashA), ob, nil)
 	if t1 == t2 {
 		t.Fatal("expected a new transport after CloseAll")
 	}

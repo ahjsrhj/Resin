@@ -486,6 +486,151 @@ func TestCreatePlatform_BuildsRoutableViewBeforePublish(t *testing.T) {
 	}
 }
 
+func TestCreatePlatform_WithEntryNodeExcludesEntryFromRoutableView(t *testing.T) {
+	dir := t.TempDir()
+	engine, closer, err := state.PersistenceBootstrap(
+		filepath.Join(dir, "state"),
+		filepath.Join(dir, "cache"),
+	)
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = closer.Close()
+	})
+
+	subMgr := topology.NewSubscriptionManager()
+	sub := subscription.NewSubscription("sub-1", "sub", "https://example.com/sub", true, false)
+	subMgr.Register(sub)
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		GeoLookup:              func(netip.Addr) string { return "us" },
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
+	})
+
+	seedNode := func(raw []byte, tag string, egressIP string) node.Hash {
+		hash := node.HashFromRawOptions(raw)
+		sub.ManagedNodes().StoreNode(hash, subscription.ManagedNode{Tags: []string{tag}})
+		entry := node.NewNodeEntry(hash, raw, time.Now(), 16)
+		entry.AddSubscriptionID(sub.ID)
+		entry.SetEgressIP(netip.MustParseAddr(egressIP))
+		entry.LatencyTable.LoadEntry("cloudflare.com", node.DomainLatencyStats{
+			Ewma:        50 * time.Millisecond,
+			LastUpdated: time.Now(),
+		})
+		ob := testutil.NewNoopOutbound()
+		entry.Outbound.Store(&ob)
+		pool.LoadNodeFromBootstrap(entry)
+		return hash
+	}
+
+	entryHash := seedNode([]byte(`{"type":"ss","server":"1.1.1.1","port":443}`), "entry", "1.2.3.4")
+	targetHash := seedNode([]byte(`{"type":"ss","server":"2.2.2.2","port":443}`), "target", "2.3.4.5")
+
+	runtimeCfg := &atomic.Pointer[config.RuntimeConfig]{}
+	runtimeCfg.Store(config.NewDefaultRuntimeConfig())
+
+	cp := &ControlPlaneService{
+		Engine:     engine,
+		Pool:       pool,
+		SubMgr:     subMgr,
+		RuntimeCfg: runtimeCfg,
+		EnvCfg: &config.EnvConfig{
+			DefaultPlatformStickyTTL:              30 * time.Minute,
+			DefaultPlatformRegexFilters:           []string{},
+			DefaultPlatformRegionFilters:          []string{},
+			DefaultPlatformReverseProxyMissAction: "TREAT_AS_EMPTY",
+			DefaultPlatformAllocationPolicy:       "BALANCED",
+		},
+	}
+
+	entryHashStr := entryHash.Hex()
+	name := "entry-platform"
+	created, err := cp.CreatePlatform(CreatePlatformRequest{
+		Name:          &name,
+		EntryNodeHash: &entryHashStr,
+	})
+	if err != nil {
+		t.Fatalf("CreatePlatform: %v", err)
+	}
+	if created.EntryNodeHash != entryHashStr {
+		t.Fatalf("response entry_node_hash = %q, want %q", created.EntryNodeHash, entryHashStr)
+	}
+
+	plat, ok := pool.GetPlatform(created.ID)
+	if !ok {
+		t.Fatalf("platform %s was not registered in pool", created.ID)
+	}
+	if plat.View().Contains(entryHash) {
+		t.Fatalf("entry node %s must not be routable", entryHash.Hex())
+	}
+	if !plat.View().Contains(targetHash) {
+		t.Fatalf("target node %s should remain routable", targetHash.Hex())
+	}
+	if got := plat.View().Size(); got != 1 {
+		t.Fatalf("new platform view size = %d, want 1", got)
+	}
+}
+
+func TestCreatePlatform_RejectsMissingEntryNode(t *testing.T) {
+	dir := t.TempDir()
+	engine, closer, err := state.PersistenceBootstrap(
+		filepath.Join(dir, "state"),
+		filepath.Join(dir, "cache"),
+	)
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = closer.Close()
+	})
+
+	subMgr := topology.NewSubscriptionManager()
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		GeoLookup:              func(netip.Addr) string { return "us" },
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
+	})
+
+	cp := &ControlPlaneService{
+		Engine: engine,
+		Pool:   pool,
+		SubMgr: subMgr,
+		EnvCfg: &config.EnvConfig{
+			DefaultPlatformStickyTTL:              30 * time.Minute,
+			DefaultPlatformRegexFilters:           []string{},
+			DefaultPlatformRegionFilters:          []string{},
+			DefaultPlatformReverseProxyMissAction: "TREAT_AS_EMPTY",
+			DefaultPlatformAllocationPolicy:       "BALANCED",
+		},
+	}
+
+	name := "entry-platform"
+	missingHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	_, err = cp.CreatePlatform(CreatePlatformRequest{
+		Name:          &name,
+		EntryNodeHash: &missingHash,
+	})
+	if err == nil {
+		t.Fatal("expected CreatePlatform to reject missing entry node")
+	}
+
+	var svcErr *ServiceError
+	if !errors.As(err, &svcErr) {
+		t.Fatalf("expected ServiceError, got %T: %v", err, err)
+	}
+	if svcErr.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("service error code = %q, want %q", svcErr.Code, "INVALID_ARGUMENT")
+	}
+	if !strings.Contains(svcErr.Message, "entry_node_hash") || !strings.Contains(svcErr.Message, "node not found") {
+		t.Fatalf("service error message = %q, expected missing entry-node hint", svcErr.Message)
+	}
+}
+
 func TestCreatePlatform_RejectsReservedAPIName(t *testing.T) {
 	dir := t.TempDir()
 	engine, closer, err := state.PersistenceBootstrap(
@@ -878,6 +1023,7 @@ func TestDeletePlatform_DoesNotDecodeCorruptPersistedFiltersJSON(t *testing.T) {
 		platformRow.Name,
 		nil,
 		nil,
+		node.Zero,
 		platformRow.StickyTTLNs,
 		platformRow.ReverseProxyMissAction,
 		string(platform.ReverseProxyEmptyAccountBehaviorAccountHeaderRule),
@@ -940,6 +1086,7 @@ func TestResetPlatformToDefault_SupportsBuiltInDefaultPlatform(t *testing.T) {
 		defaultRow.Name,
 		nil,
 		nil,
+		node.Zero,
 		defaultRow.StickyTTLNs,
 		defaultRow.ReverseProxyMissAction,
 		string(platform.ReverseProxyEmptyAccountBehaviorAccountHeaderRule),
@@ -1081,6 +1228,7 @@ func TestResetPlatformToDefault_DoesNotDecodeCorruptPersistedFiltersJSON(t *test
 		platformRow.Name,
 		nil,
 		nil,
+		node.Zero,
 		platformRow.StickyTTLNs,
 		platformRow.ReverseProxyMissAction,
 		string(platform.ReverseProxyEmptyAccountBehaviorAccountHeaderRule),

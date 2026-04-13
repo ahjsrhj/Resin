@@ -62,6 +62,9 @@ func TestMigrateStateDB_UpgradesLegacyPlatformsColumns(t *testing.T) {
 	if ok, err := hasTableColumn(db, "platforms", "reverse_proxy_fixed_account_header"); err != nil || !ok {
 		t.Fatalf("expected migrated column reverse_proxy_fixed_account_header, ok=%v err=%v", ok, err)
 	}
+	if ok, err := hasTableColumn(db, "platforms", "entry_node_hash"); err != nil || !ok {
+		t.Fatalf("expected migrated column entry_node_hash, ok=%v err=%v", ok, err)
+	}
 }
 
 func TestMigrateStateDB_LegacyBaselineAdvancesToLatest(t *testing.T) {
@@ -103,8 +106,8 @@ func TestMigrateStateDB_LegacyBaselineAdvancesToLatest(t *testing.T) {
 	if dirty {
 		t.Fatalf("schema_migrations dirty=true")
 	}
-	if version != stateVersionNormalizeMissAction {
-		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionNormalizeMissAction)
+	if version != stateVersionAddEntryNodeHash {
+		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddEntryNodeHash)
 	}
 }
 
@@ -175,8 +178,8 @@ func TestMigrateStateDB_NormalizesLegacyRandomMissAction(t *testing.T) {
 	if dirty {
 		t.Fatalf("schema_migrations dirty=true")
 	}
-	if version != stateVersionNormalizeMissAction {
-		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionNormalizeMissAction)
+	if version != stateVersionAddEntryNodeHash {
+		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddEntryNodeHash)
 	}
 }
 
@@ -237,6 +240,7 @@ func TestStateRepo_Platforms_CRUD(t *testing.T) {
 	p := model.Platform{
 		ID: "plat-1", Name: "Default", StickyTTLNs: 1000,
 		RegexFilters: []string{}, RegionFilters: []string{},
+		EntryNodeHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		ReverseProxyMissAction: "TREAT_AS_EMPTY", AllocationPolicy: "BALANCED",
 		UpdatedAtNs: now,
 	}
@@ -257,6 +261,9 @@ func TestStateRepo_Platforms_CRUD(t *testing.T) {
 			got.ReverseProxyEmptyAccountBehavior,
 			"RANDOM",
 		)
+	}
+	if got.EntryNodeHash != p.EntryNodeHash {
+		t.Fatalf("unexpected entry_node_hash: got %q want %q", got.EntryNodeHash, p.EntryNodeHash)
 	}
 
 	// List.

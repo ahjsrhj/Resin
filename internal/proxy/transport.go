@@ -18,6 +18,19 @@ type OutboundTransportConfig struct {
 	IdleConnTimeout     time.Duration
 }
 
+type outboundTransportKey struct {
+	EntryHash  node.Hash
+	TargetHash node.Hash
+}
+
+func directTransportKey(targetHash node.Hash) outboundTransportKey {
+	return outboundTransportKey{TargetHash: targetHash}
+}
+
+func chainTransportKey(entryHash, targetHash node.Hash) outboundTransportKey {
+	return outboundTransportKey{EntryHash: entryHash, TargetHash: targetHash}
+}
+
 const (
 	defaultTransportMaxIdleConns        = 1024
 	defaultTransportMaxIdleConnsPerHost = 64
@@ -42,7 +55,7 @@ func normalizeOutboundTransportConfig(cfg OutboundTransportConfig) OutboundTrans
 // are reused and can be evicted on node removal.
 type OutboundTransportPool struct {
 	config     OutboundTransportConfig
-	transports *xsync.Map[node.Hash, *http.Transport]
+	transports *xsync.Map[outboundTransportKey, *http.Transport]
 }
 
 func newOutboundTransportPool() *OutboundTransportPool {
@@ -57,34 +70,45 @@ func newOutboundTransportPoolWithConfig(cfg OutboundTransportConfig) *OutboundTr
 func NewOutboundTransportPool(cfg OutboundTransportConfig) *OutboundTransportPool {
 	return &OutboundTransportPool{
 		config:     normalizeOutboundTransportConfig(cfg),
-		transports: xsync.NewMap[node.Hash, *http.Transport](),
+		transports: xsync.NewMap[outboundTransportKey, *http.Transport](),
 	}
 }
 
 // Get returns a reusable transport for the given node hash.
 func (p *OutboundTransportPool) Get(
-	hash node.Hash,
+	key outboundTransportKey,
 	ob adapter.Outbound,
 	sink MetricsEventSink,
 ) *http.Transport {
-	transport, _ := p.transports.LoadOrCompute(hash, func() (*http.Transport, bool) {
+	transport, _ := p.transports.LoadOrCompute(key, func() (*http.Transport, bool) {
 		return p.newReusableOutboundTransport(ob, sink), false
 	})
 	return transport
 }
 
-// Evict closes idle connections for one node transport and removes it from pool.
-func (p *OutboundTransportPool) Evict(hash node.Hash) {
-	transport, ok := p.transports.LoadAndDelete(hash)
-	if !ok || transport == nil {
+// EvictNode closes idle connections for transports associated with the node.
+func (p *OutboundTransportPool) EvictNode(hash node.Hash) {
+	if p == nil {
 		return
 	}
-	transport.CloseIdleConnections()
+	var doomed []*http.Transport
+	p.transports.Range(func(key outboundTransportKey, transport *http.Transport) bool {
+		if key.EntryHash != hash && key.TargetHash != hash {
+			return true
+		}
+		if removed, ok := p.transports.LoadAndDelete(key); ok && removed != nil {
+			doomed = append(doomed, removed)
+		}
+		return true
+	})
+	for _, transport := range doomed {
+		transport.CloseIdleConnections()
+	}
 }
 
 // CloseAll closes idle connections and clears all pooled transports.
 func (p *OutboundTransportPool) CloseAll() {
-	p.transports.Range(func(_ node.Hash, transport *http.Transport) bool {
+	p.transports.Range(func(_ outboundTransportKey, transport *http.Transport) bool {
 		if transport != nil {
 			transport.CloseIdleConnections()
 		}

@@ -33,6 +33,7 @@ export const platformFormSchema = z.object({
   sticky_ttl: z.string().optional(),
   regex_filters_text: z.string().optional(),
   region_filters_text: z.string().optional(),
+  entry_node_hash: z.string().trim().regex(/^(|[0-9a-f]{32})$/, "入口节点格式无效"),
   reverse_proxy_miss_action: z.enum(missActions),
   reverse_proxy_empty_account_behavior: z.enum(emptyAccountBehaviors),
   reverse_proxy_fixed_account_header: z.string().optional(),
@@ -57,6 +58,7 @@ export const defaultPlatformFormValues: PlatformFormValues = {
   sticky_ttl: "",
   regex_filters_text: "",
   region_filters_text: "",
+  entry_node_hash: "",
   reverse_proxy_miss_action: "TREAT_AS_EMPTY",
   reverse_proxy_empty_account_behavior: "RANDOM",
   reverse_proxy_fixed_account_header: "Authorization",
@@ -72,6 +74,7 @@ export function platformToFormValues(platform: Platform): PlatformFormValues {
     sticky_ttl: platform.sticky_ttl,
     regex_filters_text: regexFilters.join("\n"),
     region_filters_text: regionFilters.join("\n"),
+    entry_node_hash: platform.entry_node_hash,
     reverse_proxy_miss_action: platform.reverse_proxy_miss_action,
     reverse_proxy_empty_account_behavior: platform.reverse_proxy_empty_account_behavior,
     reverse_proxy_fixed_account_header: platform.reverse_proxy_fixed_account_header,
@@ -84,6 +87,7 @@ function toPlatformPayloadBase(values: PlatformFormValues) {
     name: values.name.trim(),
     regex_filters: parseLinesToList(values.regex_filters_text),
     region_filters: parseLinesToList(values.region_filters_text, (value) => value.toLowerCase()),
+    entry_node_hash: values.entry_node_hash.trim(),
     reverse_proxy_miss_action: values.reverse_proxy_miss_action,
     reverse_proxy_empty_account_behavior: values.reverse_proxy_empty_account_behavior,
     reverse_proxy_fixed_account_header: parseHeaderLines(values.reverse_proxy_fixed_account_header).join("\n"),
@@ -92,8 +96,10 @@ function toPlatformPayloadBase(values: PlatformFormValues) {
 }
 
 export function toPlatformCreateInput(values: PlatformFormValues): PlatformCreateInput {
+  const entryNodeHash = values.entry_node_hash.trim();
   return {
     ...toPlatformPayloadBase(values),
+    entry_node_hash: entryNodeHash || undefined,
     sticky_ttl: values.sticky_ttl?.trim() || undefined,
   };
 }
@@ -101,6 +107,7 @@ export function toPlatformCreateInput(values: PlatformFormValues): PlatformCreat
 export function toPlatformUpdateInput(values: PlatformFormValues): PlatformUpdateInput {
   return {
     ...toPlatformPayloadBase(values),
+    entry_node_hash: values.entry_node_hash.trim(),
     sticky_ttl: values.sticky_ttl?.trim() || "",
   };
 }

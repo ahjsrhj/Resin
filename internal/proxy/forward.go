@@ -27,11 +27,13 @@ type ForwardProxyConfig struct {
 	AuthVersion       string
 	Router            *routing.Router
 	Pool              outbound.PoolAccessor
+	PlatformLookup    PlatformLookup
 	Health            HealthRecorder
 	Events            EventEmitter
 	MetricsSink       MetricsEventSink
 	OutboundTransport OutboundTransportConfig
 	TransportPool     *OutboundTransportPool
+	ChainPool         *ChainedOutboundPool
 }
 
 // ForwardProxy implements an HTTP forward proxy with Proxy-Authorization
@@ -41,12 +43,14 @@ type ForwardProxy struct {
 	authVersion       config.AuthVersion
 	router            *routing.Router
 	pool              outbound.PoolAccessor
+	platLook          PlatformLookup
 	health            HealthRecorder
 	events            EventEmitter
 	metricsSink       MetricsEventSink
 	transportConfig   OutboundTransportConfig
 	transportPool     *OutboundTransportPool
 	transportPoolOnce sync.Once
+	chainPool         *ChainedOutboundPool
 }
 
 // NewForwardProxy creates a new forward proxy handler.
@@ -60,6 +64,10 @@ func NewForwardProxy(cfg ForwardProxyConfig) *ForwardProxy {
 	if transportPool == nil {
 		transportPool = NewOutboundTransportPool(transportCfg)
 	}
+	chainPool := cfg.ChainPool
+	if chainPool == nil {
+		chainPool = NewChainedOutboundPool()
+	}
 	authVersion := config.NormalizeAuthVersion(cfg.AuthVersion)
 	if authVersion == "" {
 		authVersion = config.AuthVersionLegacyV0
@@ -69,11 +77,13 @@ func NewForwardProxy(cfg ForwardProxyConfig) *ForwardProxy {
 		authVersion:     authVersion,
 		router:          cfg.Router,
 		pool:            cfg.Pool,
+		platLook:        cfg.PlatformLookup,
 		health:          cfg.Health,
 		events:          ev,
 		metricsSink:     cfg.MetricsSink,
 		transportConfig: transportCfg,
 		transportPool:   transportPool,
+		chainPool:       chainPool,
 	}
 }
 
@@ -83,7 +93,7 @@ func (p *ForwardProxy) outboundHTTPTransport(routed routedOutbound) *http.Transp
 			p.transportPool = NewOutboundTransportPool(p.transportConfig)
 		}
 	})
-	return p.transportPool.Get(routed.Route.NodeHash, routed.Outbound, p.metricsSink)
+	return p.transportPool.Get(routed.TransportKey, routed.Outbound, p.metricsSink)
 }
 
 func (p *ForwardProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -309,7 +319,7 @@ func (p *ForwardProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	defer lifecycle.finish()
 	lifecycle.setAccount(account)
 
-	routed, routeErr := resolveRoutedOutbound(p.router, p.pool, platName, account, r.Host)
+	routed, routeErr := resolveRoutedOutbound(p.router, p.pool, p.platLook, p.chainPool, platName, account, r.Host)
 	if routeErr != nil {
 		lifecycle.setProxyError(routeErr)
 		lifecycle.setHTTPStatus(routeErr.HTTPCode)
@@ -317,7 +327,9 @@ func (p *ForwardProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lifecycle.setRouteResult(routed.Route)
-	go p.health.RecordLatency(routed.Route.NodeHash, netutil.ExtractDomain(r.Host), nil)
+	if routed.PassiveHealth {
+		go p.health.RecordLatency(routed.Route.NodeHash, netutil.ExtractDomain(r.Host), nil)
+	}
 
 	transport := p.outboundHTTPTransport(routed)
 	outReq := prepareForwardOutboundRequest(r)
@@ -350,7 +362,9 @@ func (p *ForwardProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		lifecycle.setProxyError(proxyErr)
 		lifecycle.setUpstreamError("forward_roundtrip", err)
 		lifecycle.setHTTPStatus(proxyErr.HTTPCode)
-		go p.health.RecordResult(routed.Route.NodeHash, false)
+		if routed.PassiveHealth {
+			go p.health.RecordResult(routed.Route.NodeHash, false)
+		}
 		writeProxyError(w, proxyErr)
 		return
 	}
@@ -369,13 +383,17 @@ func (p *ForwardProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			lifecycle.setProxyError(ErrUpstreamRequestFailed)
 			lifecycle.setUpstreamError("forward_upstream_to_client_copy", copyErr)
 			lifecycle.setNetOK(false)
-			go p.health.RecordResult(routed.Route.NodeHash, false)
+			if routed.PassiveHealth {
+				go p.health.RecordResult(routed.Route.NodeHash, false)
+			}
 		}
 		return
 	}
 
 	// Full body transfer succeeded — count as network success even for 5xx HTTP.
-	go p.health.RecordResult(routed.Route.NodeHash, true)
+	if routed.PassiveHealth {
+		go p.health.RecordResult(routed.Route.NodeHash, true)
+	}
 }
 
 func (p *ForwardProxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
@@ -391,7 +409,7 @@ func (p *ForwardProxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 	defer lifecycle.finish()
 	lifecycle.setAccount(account)
 
-	routed, routeErr := resolveRoutedOutbound(p.router, p.pool, platName, account, target)
+	routed, routeErr := resolveRoutedOutbound(p.router, p.pool, p.platLook, p.chainPool, platName, account, target)
 	if routeErr != nil {
 		lifecycle.setProxyError(routeErr)
 		lifecycle.setHTTPStatus(routeErr.HTTPCode)
@@ -403,7 +421,9 @@ func (p *ForwardProxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 	// Wrap the dialed connection with tlsLatencyConn for passive TLS latency.
 	domain := netutil.ExtractDomain(target)
 	nodeHashRaw := routed.Route.NodeHash
-	go p.health.RecordLatency(nodeHashRaw, domain, nil)
+	if routed.PassiveHealth {
+		go p.health.RecordLatency(nodeHashRaw, domain, nil)
+	}
 
 	rawConn, err := routed.Outbound.DialContext(r.Context(), "tcp", M.ParseSocksaddr(target))
 	if err != nil {
@@ -417,13 +437,17 @@ func (p *ForwardProxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 		lifecycle.setProxyError(proxyErr)
 		lifecycle.setUpstreamError("connect_dial", err)
 		lifecycle.setHTTPStatus(proxyErr.HTTPCode)
-		go p.health.RecordResult(nodeHashRaw, false)
+		if routed.PassiveHealth {
+			go p.health.RecordResult(nodeHashRaw, false)
+		}
 		writeProxyError(w, proxyErr)
 		return
 	}
 	recordConnectResult := func(ok bool) {
 		lifecycle.setNetOK(ok)
-		go p.health.RecordResult(nodeHashRaw, ok)
+		if routed.PassiveHealth {
+			go p.health.RecordResult(nodeHashRaw, ok)
+		}
 	}
 
 	// Wrap with counting conn for traffic/connection metrics.
@@ -435,7 +459,9 @@ func (p *ForwardProxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 
 	// Wrap with TLS latency measurement.
 	upstreamConn := newTLSLatencyConn(upstreamBase, func(latency time.Duration) {
-		p.health.RecordLatency(nodeHashRaw, domain, &latency)
+		if routed.PassiveHealth {
+			p.health.RecordLatency(nodeHashRaw, domain, &latency)
+		}
 	})
 
 	// Hijack the client connection.

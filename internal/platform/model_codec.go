@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Resinat/Resin/internal/model"
+	"github.com/Resinat/Resin/internal/node"
 )
 
 func isLowerAlpha2(s string) bool {
@@ -43,11 +44,28 @@ func CompileRegexFilters(regexFilters []string) ([]*regexp.Regexp, error) {
 	return compiled, nil
 }
 
+func NormalizeEntryNodeHash(raw string) string {
+	return strings.TrimSpace(raw)
+}
+
+func ParseEntryNodeHash(raw string) (node.Hash, error) {
+	normalized := NormalizeEntryNodeHash(raw)
+	if normalized == "" {
+		return node.Zero, nil
+	}
+	hash, err := node.ParseHex(normalized)
+	if err != nil {
+		return node.Zero, fmt.Errorf("entry_node_hash: invalid node hash")
+	}
+	return hash, nil
+}
+
 // NewConfiguredPlatform builds a runtime platform with non-filter settings applied.
 func NewConfiguredPlatform(
 	id, name string,
 	regexFilters []*regexp.Regexp,
 	regionFilters []string,
+	entryNodeHash node.Hash,
 	stickyTTLNs int64,
 	missAction string,
 	emptyAccountBehavior string,
@@ -60,6 +78,7 @@ func NewConfiguredPlatform(
 		fixedHeaders = nil
 	}
 	plat := NewPlatform(id, name, regexFilters, regionFilters)
+	plat.EntryNodeHash = entryNodeHash
 	plat.StickyTTLNs = stickyTTLNs
 	plat.ReverseProxyMissAction = missAction
 	plat.ReverseProxyEmptyAccountBehavior = emptyAccountBehavior
@@ -86,6 +105,10 @@ func BuildFromModel(mp model.Platform) (*Platform, error) {
 	}
 	if err := ValidateRegionFilters(mp.RegionFilters); err != nil {
 		return nil, err
+	}
+	entryNodeHash, err := ParseEntryNodeHash(mp.EntryNodeHash)
+	if err != nil {
+		return nil, fmt.Errorf("decode platform %s %w", mp.ID, err)
 	}
 	emptyAccountBehavior := mp.ReverseProxyEmptyAccountBehavior
 	if !ReverseProxyEmptyAccountBehavior(emptyAccountBehavior).IsValid() {
@@ -116,6 +139,7 @@ func BuildFromModel(mp model.Platform) (*Platform, error) {
 		mp.Name,
 		regexFilters,
 		append([]string(nil), mp.RegionFilters...),
+		entryNodeHash,
 		mp.StickyTTLNs,
 		string(missAction),
 		emptyAccountBehavior,
