@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/puzpuzpuz/xsync/v4"
 	"github.com/Resinat/Resin/internal/node"
+	"github.com/puzpuzpuz/xsync/v4"
 	"github.com/sagernet/sing-box/adapter"
 	M "github.com/sagernet/sing/common/metadata"
 )
@@ -19,16 +19,26 @@ type OutboundTransportConfig struct {
 }
 
 type outboundTransportKey struct {
-	EntryHash  node.Hash
-	TargetHash node.Hash
+	HopCount uint8
+	Hops     [3]node.Hash
 }
 
 func directTransportKey(targetHash node.Hash) outboundTransportKey {
-	return outboundTransportKey{TargetHash: targetHash}
+	return transportKeyFromHops(targetHash)
 }
 
-func chainTransportKey(entryHash, targetHash node.Hash) outboundTransportKey {
-	return outboundTransportKey{EntryHash: entryHash, TargetHash: targetHash}
+func chainTransportKey(hops ...node.Hash) outboundTransportKey {
+	return transportKeyFromHops(hops...)
+}
+
+func transportKeyFromHops(hops ...node.Hash) outboundTransportKey {
+	var key outboundTransportKey
+	if len(hops) > len(key.Hops) {
+		hops = hops[:len(key.Hops)]
+	}
+	key.HopCount = uint8(len(hops))
+	copy(key.Hops[:], hops)
+	return key
 }
 
 const (
@@ -93,7 +103,7 @@ func (p *OutboundTransportPool) EvictNode(hash node.Hash) {
 	}
 	var doomed []*http.Transport
 	p.transports.Range(func(key outboundTransportKey, transport *http.Transport) bool {
-		if key.EntryHash != hash && key.TargetHash != hash {
+		if !transportKeyContainsHash(key, hash) {
 			return true
 		}
 		if removed, ok := p.transports.LoadAndDelete(key); ok && removed != nil {
@@ -115,6 +125,15 @@ func (p *OutboundTransportPool) CloseAll() {
 		return true
 	})
 	p.transports.Clear()
+}
+
+func transportKeyContainsHash(key outboundTransportKey, hash node.Hash) bool {
+	for i := uint8(0); i < key.HopCount; i++ {
+		if key.Hops[i] == hash {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *OutboundTransportPool) newReusableOutboundTransport(ob adapter.Outbound, sink MetricsEventSink) *http.Transport {

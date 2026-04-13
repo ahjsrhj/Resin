@@ -407,7 +407,11 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		a.transportPool = proxy.NewOutboundTransportPool(outboundTransportCfg)
 	}
 	if a.chainPool == nil {
-		a.chainPool = proxy.NewChainedOutboundPool()
+		if a.topoRuntime != nil && a.topoRuntime.chainPool != nil {
+			a.chainPool = a.topoRuntime.chainPool
+		} else {
+			a.chainPool = proxy.NewChainedOutboundPool()
+		}
 	}
 
 	forwardProxy := proxy.NewForwardProxy(proxy.ForwardProxyConfig{

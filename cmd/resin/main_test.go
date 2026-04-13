@@ -142,6 +142,43 @@ func TestBootstrapTopology_CreatesDefaultPlatformWhenMissing(t *testing.T) {
 	}
 }
 
+func TestBootstrapTopology_RestoresSubscriptionChainNodeHash(t *testing.T) {
+	engine, closer, err := state.PersistenceBootstrap(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = closer.Close() })
+
+	now := time.Now().UnixNano()
+	if err := engine.UpsertSubscription(model.Subscription{
+		ID:                        "sub-chain",
+		Name:                      "ChainSub",
+		URL:                       "https://example.com/sub",
+		ChainNodeHash:             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		UpdateIntervalNs:          int64(30 * time.Minute),
+		Enabled:                   true,
+		Ephemeral:                 false,
+		EphemeralNodeEvictDelayNs: int64(72 * time.Hour),
+		CreatedAtNs:               now,
+		UpdatedAtNs:               now,
+	}); err != nil {
+		t.Fatalf("UpsertSubscription: %v", err)
+	}
+
+	subManager, pool := newBootstrapTestRuntime(config.NewDefaultRuntimeConfig())
+	if err := bootstrapTopology(engine, subManager, pool, newDefaultPlatformEnvConfig()); err != nil {
+		t.Fatalf("bootstrapTopology: %v", err)
+	}
+
+	sub, ok := subManager.Get("sub-chain")
+	if !ok {
+		t.Fatal("expected subscription to be restored")
+	}
+	if got, want := sub.ChainNodeHash(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; got != want {
+		t.Fatalf("restored chain_node_hash = %q, want %q", got, want)
+	}
+}
+
 func TestBootstrapTopology_DefaultPlatformCreationIsIdempotent(t *testing.T) {
 	engine, closer, err := state.PersistenceBootstrap(t.TempDir(), t.TempDir())
 	if err != nil {

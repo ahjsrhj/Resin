@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"path/filepath"
@@ -859,6 +860,254 @@ func TestGetSubscription_HealthyNodeCount_ExcludesDisabledSubscriptionNodes(t *t
 	}
 	if resp.HealthyNodeCount != 0 {
 		t.Fatalf("healthy_node_count = %d, want 0", resp.HealthyNodeCount)
+	}
+}
+
+func TestCreateSubscription_AcceptsChainNodeHashAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	engine, closer, err := state.PersistenceBootstrap(
+		filepath.Join(dir, "state"),
+		filepath.Join(dir, "cache"),
+	)
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = closer.Close() })
+
+	subMgr := topology.NewSubscriptionManager()
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		GeoLookup:              func(netip.Addr) string { return "us" },
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
+	})
+
+	raw := []byte(`{"type":"ss","server":"1.1.1.1","port":443}`)
+	hash := node.HashFromRawOptions(raw)
+	entry := node.NewNodeEntry(hash, raw, time.Now(), 16)
+	outbound := testutil.NewNoopOutbound()
+	entry.Outbound.Store(&outbound)
+	pool.LoadNodeFromBootstrap(entry)
+
+	cp := &ControlPlaneService{
+		Engine: engine,
+		Pool:   pool,
+		SubMgr: subMgr,
+	}
+
+	name := "sub-with-chain"
+	url := "https://example.com/sub"
+	chainNodeHash := hash.Hex()
+	resp, err := cp.CreateSubscription(CreateSubscriptionRequest{
+		Name:          &name,
+		URL:           &url,
+		ChainNodeHash: &chainNodeHash,
+	})
+	if err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+	if resp.ChainNodeHash != chainNodeHash {
+		t.Fatalf("response chain_node_hash = %q, want %q", resp.ChainNodeHash, chainNodeHash)
+	}
+
+	sub := subMgr.Lookup(resp.ID)
+	if sub == nil {
+		t.Fatalf("subscription %q not registered", resp.ID)
+	}
+	if got := sub.ChainNodeHash(); got != chainNodeHash {
+		t.Fatalf("runtime chain_node_hash = %q, want %q", got, chainNodeHash)
+	}
+
+	subs, err := engine.ListSubscriptions()
+	if err != nil {
+		t.Fatalf("ListSubscriptions: %v", err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("subscriptions len = %d, want 1", len(subs))
+	}
+	if got := subs[0].ChainNodeHash; got != chainNodeHash {
+		t.Fatalf("persisted chain_node_hash = %q, want %q", got, chainNodeHash)
+	}
+}
+
+func TestCreateSubscription_RejectsInvalidChainNodeHash(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		GeoLookup:              func(netip.Addr) string { return "us" },
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
+	})
+	cp := &ControlPlaneService{
+		Pool:   pool,
+		SubMgr: subMgr,
+	}
+
+	name := "sub-invalid-chain"
+	url := "https://example.com/sub"
+	chainNodeHash := "not-a-hash"
+	_, err := cp.CreateSubscription(CreateSubscriptionRequest{
+		Name:          &name,
+		URL:           &url,
+		ChainNodeHash: &chainNodeHash,
+	})
+	if err == nil {
+		t.Fatal("expected CreateSubscription to reject invalid chain_node_hash")
+	}
+
+	var svcErr *ServiceError
+	if !errors.As(err, &svcErr) {
+		t.Fatalf("expected ServiceError, got %T: %v", err, err)
+	}
+	if svcErr.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("service error code = %q, want %q", svcErr.Code, "INVALID_ARGUMENT")
+	}
+	if !strings.Contains(svcErr.Message, "chain_node_hash") || !strings.Contains(svcErr.Message, "invalid node hash") {
+		t.Fatalf("service error message = %q", svcErr.Message)
+	}
+}
+
+func TestCreateSubscription_RejectsChainNodeWithoutReadyOutbound(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		GeoLookup:              func(netip.Addr) string { return "us" },
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
+	})
+
+	raw := []byte(`{"type":"ss","server":"1.1.1.2","port":443}`)
+	hash := node.HashFromRawOptions(raw)
+	pool.LoadNodeFromBootstrap(node.NewNodeEntry(hash, raw, time.Now(), 16))
+
+	cp := &ControlPlaneService{
+		Pool:   pool,
+		SubMgr: subMgr,
+	}
+
+	name := "sub-no-outbound-chain"
+	url := "https://example.com/sub"
+	chainNodeHash := hash.Hex()
+	_, err := cp.CreateSubscription(CreateSubscriptionRequest{
+		Name:          &name,
+		URL:           &url,
+		ChainNodeHash: &chainNodeHash,
+	})
+	if err == nil {
+		t.Fatal("expected CreateSubscription to reject chain node without outbound")
+	}
+
+	var svcErr *ServiceError
+	if !errors.As(err, &svcErr) {
+		t.Fatalf("expected ServiceError, got %T: %v", err, err)
+	}
+	if svcErr.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("service error code = %q, want %q", svcErr.Code, "INVALID_ARGUMENT")
+	}
+	if !strings.Contains(svcErr.Message, "chain_node_hash") || !strings.Contains(svcErr.Message, "outbound not ready") {
+		t.Fatalf("service error message = %q", svcErr.Message)
+	}
+}
+
+func TestUpdateSubscription_UpdatesAndClearsChainNodeHash(t *testing.T) {
+	dir := t.TempDir()
+	engine, closer, err := state.PersistenceBootstrap(
+		filepath.Join(dir, "state"),
+		filepath.Join(dir, "cache"),
+	)
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = closer.Close() })
+
+	subMgr := topology.NewSubscriptionManager()
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		GeoLookup:              func(netip.Addr) string { return "us" },
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
+	})
+	scheduler := topology.NewSubscriptionScheduler(topology.SchedulerConfig{
+		SubManager: subMgr,
+		Pool:       pool,
+		Fetcher: func(string) ([]byte, error) {
+			return nil, errors.New("unused test fetcher")
+		},
+	})
+
+	raw := []byte(`{"type":"ss","server":"1.1.1.3","port":443}`)
+	hash := node.HashFromRawOptions(raw)
+	entry := node.NewNodeEntry(hash, raw, time.Now(), 16)
+	outbound := testutil.NewNoopOutbound()
+	entry.Outbound.Store(&outbound)
+	pool.LoadNodeFromBootstrap(entry)
+
+	sub := subscription.NewSubscription("sub-1", "sub", "https://example.com/sub", true, false)
+	sub.SetFetchConfig("https://example.com/sub", int64(30*time.Second))
+	sub.CreatedAtNs = time.Now().Add(-time.Minute).UnixNano()
+	sub.UpdatedAtNs = sub.CreatedAtNs
+	subMgr.Register(sub)
+	if err := engine.UpsertSubscription(model.Subscription{
+		ID:                        sub.ID,
+		Name:                      sub.Name(),
+		URL:                       sub.URL(),
+		UpdateIntervalNs:          sub.UpdateIntervalNs(),
+		Enabled:                   sub.Enabled(),
+		Ephemeral:                 sub.Ephemeral(),
+		EphemeralNodeEvictDelayNs: sub.EphemeralNodeEvictDelayNs(),
+		CreatedAtNs:               sub.CreatedAtNs,
+		UpdatedAtNs:               sub.UpdatedAtNs,
+	}); err != nil {
+		t.Fatalf("UpsertSubscription: %v", err)
+	}
+
+	cp := &ControlPlaneService{
+		Engine:    engine,
+		Pool:      pool,
+		SubMgr:    subMgr,
+		Scheduler: scheduler,
+	}
+
+	patchJSON, err := json.Marshal(map[string]any{"chain_node_hash": hash.Hex()})
+	if err != nil {
+		t.Fatalf("marshal patch: %v", err)
+	}
+	resp, err := cp.UpdateSubscription(sub.ID, patchJSON)
+	if err != nil {
+		t.Fatalf("UpdateSubscription set chain_node_hash: %v", err)
+	}
+	if resp.ChainNodeHash != hash.Hex() {
+		t.Fatalf("response chain_node_hash = %q, want %q", resp.ChainNodeHash, hash.Hex())
+	}
+	if got := sub.ChainNodeHash(); got != hash.Hex() {
+		t.Fatalf("runtime chain_node_hash = %q, want %q", got, hash.Hex())
+	}
+
+	subs, err := engine.ListSubscriptions()
+	if err != nil {
+		t.Fatalf("ListSubscriptions: %v", err)
+	}
+	if got := subs[0].ChainNodeHash; got != hash.Hex() {
+		t.Fatalf("persisted chain_node_hash = %q, want %q", got, hash.Hex())
+	}
+
+	clearPatchJSON, err := json.Marshal(map[string]any{"chain_node_hash": ""})
+	if err != nil {
+		t.Fatalf("marshal clear patch: %v", err)
+	}
+	resp, err = cp.UpdateSubscription(sub.ID, clearPatchJSON)
+	if err != nil {
+		t.Fatalf("UpdateSubscription clear chain_node_hash: %v", err)
+	}
+	if resp.ChainNodeHash != "" {
+		t.Fatalf("response chain_node_hash after clear = %q, want empty", resp.ChainNodeHash)
+	}
+	if got := sub.ChainNodeHash(); got != "" {
+		t.Fatalf("runtime chain_node_hash after clear = %q, want empty", got)
 	}
 }
 

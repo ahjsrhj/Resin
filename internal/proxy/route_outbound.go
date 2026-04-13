@@ -10,11 +10,12 @@ import (
 )
 
 type routedOutbound struct {
-	Route          routing.RouteResult
-	Outbound       adapter.Outbound
-	TransportKey   outboundTransportKey
-	PassiveHealth  bool
-	EntryNodeHash  node.Hash
+	Route         routing.RouteResult
+	Outbound      adapter.Outbound
+	TransportKey  outboundTransportKey
+	PassiveHealth bool
+	EntryNodeHash node.Hash
+	ChainNodeHash node.Hash
 }
 
 func resolveRoutedOutbound(
@@ -40,8 +41,23 @@ func resolveRoutedOutbound(
 		return routedOutbound{}, ErrNoAvailableNodes
 	}
 
-	entryNodeHash := resolvePlatformEntryNodeHash(platformLookup, result.PlatformID)
-	if entryNodeHash == node.Zero {
+	chain, err := outbound.ResolveForwardNodeChain(
+		pool,
+		platformLookup,
+		resolveSubscriptionChainLookup(pool),
+		result.PlatformID,
+		result.NodeHash,
+	)
+	if err != nil {
+		if errors.Is(err, outbound.ErrOutboundNotReady) ||
+			errors.Is(err, outbound.ErrChainUnavailable) ||
+			errors.Is(err, outbound.ErrChainTargetConflict) {
+			return routedOutbound{}, ErrNoAvailableNodes
+		}
+		return routedOutbound{}, ErrInternalError
+	}
+
+	if !chain.MultiHop() {
 		return routedOutbound{
 			Route:         result,
 			Outbound:      *obPtr,
@@ -50,22 +66,12 @@ func resolveRoutedOutbound(
 		}, nil
 	}
 
-	if entryNodeHash == result.NodeHash {
-		return routedOutbound{}, ErrNoAvailableNodes
-	}
-
-	entryNode, ok := pool.GetEntry(entryNodeHash)
-	if !ok || entryNode == nil || !entryNode.HasOutbound() {
-		return routedOutbound{}, ErrNoAvailableNodes
-	}
 	if chainPool == nil {
 		return routedOutbound{}, ErrInternalError
 	}
 	chainedOutbound, err := chainPool.Get(
-		entryNodeHash,
-		result.NodeHash,
-		entryNode.RawOptions,
-		targetEntry.RawOptions,
+		chain.Hops,
+		chain.RawOptions,
 	)
 	if err != nil {
 		if errors.Is(err, outbound.ErrOutboundNotReady) {
@@ -77,19 +83,17 @@ func resolveRoutedOutbound(
 	return routedOutbound{
 		Route:         result,
 		Outbound:      chainedOutbound,
-		TransportKey:  chainTransportKey(entryNodeHash, result.NodeHash),
+		TransportKey:  chainTransportKey(chain.Hops...),
 		PassiveHealth: false,
-		EntryNodeHash: entryNodeHash,
+		EntryNodeHash: chain.EntryNodeHash,
+		ChainNodeHash: chain.ChainNodeHash,
 	}, nil
 }
 
-func resolvePlatformEntryNodeHash(platformLookup PlatformLookup, platformID string) node.Hash {
-	if platformLookup == nil || platformID == "" {
-		return node.Zero
+func resolveSubscriptionChainLookup(pool outbound.PoolAccessor) outbound.SubscriptionChainLookup {
+	if pool == nil {
+		return nil
 	}
-	plat, ok := platformLookup.GetPlatform(platformID)
-	if !ok || plat == nil {
-		return node.Zero
-	}
-	return plat.EntryNodeHash
+	lookup, _ := pool.(outbound.SubscriptionChainLookup)
+	return lookup
 }

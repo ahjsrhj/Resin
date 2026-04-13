@@ -10,40 +10,43 @@ import (
 )
 
 type ChainedOutboundBundle struct {
-	Outbound adapter.Outbound
-	entry    adapter.Outbound
-	target   adapter.Outbound
-	builder  *SingboxBuilder
+	Outbound  adapter.Outbound
+	outbounds []adapter.Outbound
+	builder   *SingboxBuilder
 }
 
 func NewChainedOutboundBundle(
-	entryRaw json.RawMessage,
-	targetRaw json.RawMessage,
-	entryTag string,
-	targetTag string,
+	rawOptions []json.RawMessage,
+	tags []string,
 ) (*ChainedOutboundBundle, error) {
+	if len(rawOptions) == 0 || len(rawOptions) != len(tags) {
+		return nil, fmt.Errorf("new chained outbound bundle: invalid hop inputs")
+	}
+
 	builder, err := NewSingboxBuilder()
 	if err != nil {
 		return nil, err
 	}
 
-	entryOutbound, err := builder.buildManagedOutbound(entryRaw, entryTag, "")
-	if err != nil {
-		_ = builder.Close()
-		return nil, err
-	}
-	targetOutbound, err := builder.buildManagedOutbound(targetRaw, targetTag, entryTag)
-	if err != nil {
-		closeOutbound(entryOutbound)
-		_ = builder.Close()
-		return nil, err
+	outbounds := make([]adapter.Outbound, 0, len(rawOptions))
+	prevTag := ""
+	for i, raw := range rawOptions {
+		ob, buildErr := builder.buildManagedOutbound(raw, tags[i], prevTag)
+		if buildErr != nil {
+			for j := len(outbounds) - 1; j >= 0; j-- {
+				closeOutbound(outbounds[j])
+			}
+			_ = builder.Close()
+			return nil, buildErr
+		}
+		outbounds = append(outbounds, ob)
+		prevTag = tags[i]
 	}
 
 	return &ChainedOutboundBundle{
-		Outbound: targetOutbound,
-		entry:    entryOutbound,
-		target:   targetOutbound,
-		builder:  builder,
+		Outbound:  outbounds[len(outbounds)-1],
+		outbounds: outbounds,
+		builder:   builder,
 	}, nil
 }
 
@@ -51,8 +54,9 @@ func (b *ChainedOutboundBundle) Close() error {
 	if b == nil {
 		return nil
 	}
-	closeOutbound(b.target)
-	closeOutbound(b.entry)
+	for i := len(b.outbounds) - 1; i >= 0; i-- {
+		closeOutbound(b.outbounds[i])
+	}
 	if b.builder != nil {
 		return b.builder.Close()
 	}
@@ -117,8 +121,12 @@ func (b *SingboxBuilder) parseOutboundConfig(rawOptions json.RawMessage) (option
 	return outboundConfig, nil
 }
 
-func MakeChainOutboundTags(entryTagSeed, targetTagSeed string) (string, string) {
-	return "resin-chain-entry-" + entryTagSeed, "resin-chain-target-" + targetTagSeed
+func MakeChainOutboundTags(tagSeeds ...string) []string {
+	tags := make([]string, 0, len(tagSeeds))
+	for i, seed := range tagSeeds {
+		tags = append(tags, fmt.Sprintf("resin-chain-hop-%d-%s", i+1, seed))
+	}
+	return tags
 }
 
 func CloneRawOptions(raw json.RawMessage) json.RawMessage {

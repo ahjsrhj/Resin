@@ -105,6 +105,7 @@ var subscriptionPatchAllowedFields = map[string]bool{
 	"name":                       true,
 	"url":                        true,
 	"content":                    true,
+	"chain_node_hash":            true,
 	"update_interval":            true,
 	"enabled":                    true,
 	"ephemeral":                  true,

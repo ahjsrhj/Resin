@@ -29,6 +29,7 @@ import (
 	"github.com/Resinat/Resin/internal/state"
 	"github.com/Resinat/Resin/internal/subscription"
 	"github.com/Resinat/Resin/internal/topology"
+	"github.com/sagernet/sing-box/adapter"
 )
 
 type topologyRuntime struct {
@@ -40,6 +41,7 @@ type topologyRuntime struct {
 	router           *routing.Router
 	leaseCleaner     *routing.LeaseCleaner
 	outboundMgr      *outbound.OutboundManager
+	chainPool        *proxy.ChainedOutboundPool
 	singboxBuilder   *outbound.SingboxBuilder // for Close on shutdown
 }
 
@@ -263,6 +265,7 @@ func newTopologyRuntime(
 		return nil, fmt.Errorf("singbox builder: %w", err)
 	}
 	outboundMgr := outbound.NewOutboundManager(pool, singboxBuilder)
+	chainPool := proxy.NewChainedOutboundPool()
 
 	probeMgr := probe.NewProbeManager(probe.ProbeConfig{
 		Pool:        pool,
@@ -270,15 +273,31 @@ func newTopologyRuntime(
 		Fetcher: func(hash node.Hash, url string) ([]byte, time.Duration, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), envCfg.ProbeTimeout)
 			defer cancel()
-			entry, ok := pool.GetEntry(hash)
-			if !ok {
-				return nil, 0, fmt.Errorf("node not found")
+
+			chain, err := outbound.ResolveProbeNodeChain(pool, pool, hash)
+			if err != nil {
+				return nil, 0, err
 			}
-			outboundPtr := entry.Outbound.Load()
-			if outboundPtr == nil {
-				return nil, 0, outbound.ErrOutboundNotReady
+
+			var probeOutbound adapter.Outbound
+			if chain.MultiHop() {
+				probeOutbound, err = chainPool.Get(chain.Hops, chain.RawOptions)
+				if err != nil {
+					return nil, 0, err
+				}
+			} else {
+				entry, ok := pool.GetEntry(hash)
+				if !ok {
+					return nil, 0, fmt.Errorf("node not found")
+				}
+				outboundPtr := entry.Outbound.Load()
+				if outboundPtr == nil {
+					return nil, 0, outbound.ErrOutboundNotReady
+				}
+				probeOutbound = *outboundPtr
 			}
-			return netutil.HTTPGetViaOutbound(ctx, *outboundPtr, url, netutil.OutboundHTTPOptions{
+
+			return netutil.HTTPGetViaOutbound(ctx, probeOutbound, url, netutil.OutboundHTTPOptions{
 				RequireStatusOK: false,
 				OnConnLifecycle: func(op netutil.ConnLifecycleOp) {
 					if onProbeConnLifecycle != nil {
@@ -313,6 +332,9 @@ func newTopologyRuntime(
 	pool.SetOnNodeRemoved(func(hash node.Hash, entry *node.NodeEntry) {
 		markNodeRemovedDirty(engine, hash, entry)
 		outboundMgr.RemoveNodeOutbound(entry)
+		if chainPool != nil {
+			chainPool.EvictNode(hash)
+		}
 		if entry != nil && entry.LatencyTable != nil {
 			entry.LatencyTable.Close()
 		}
@@ -347,6 +369,7 @@ func newTopologyRuntime(
 		scheduler:        scheduler,
 		ephemeralCleaner: ephemeralCleaner,
 		outboundMgr:      outboundMgr,
+		chainPool:        chainPool,
 		singboxBuilder:   singboxBuilder,
 	}, nil
 }
@@ -380,6 +403,7 @@ func bootstrapTopology(
 		sub.SetFetchConfig(ms.URL, ms.UpdateIntervalNs)
 		sub.SetSourceType(ms.SourceType)
 		sub.SetContent(ms.Content)
+		sub.SetChainNodeHash(ms.ChainNodeHash)
 		sub.SetEphemeralNodeEvictDelayNs(ms.EphemeralNodeEvictDelayNs)
 		sub.CreatedAtNs = ms.CreatedAtNs
 		sub.UpdatedAtNs = ms.UpdatedAtNs

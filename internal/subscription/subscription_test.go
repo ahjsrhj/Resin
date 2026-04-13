@@ -127,6 +127,14 @@ func TestSubscription_SourceTypeAndContent(t *testing.T) {
 	}
 }
 
+func TestSubscription_ChainNodeHashThreadSafe(t *testing.T) {
+	s := NewSubscription("id1", "sub", "url", true, false)
+	s.SetChainNodeHash("  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  ")
+	if got, want := s.ChainNodeHash(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; got != want {
+		t.Fatalf("chain node hash: got %q, want %q", got, want)
+	}
+}
+
 func TestDiffHashes(t *testing.T) {
 	h1 := node.HashFromRawOptions([]byte(`{"type":"ss","server":"1.1.1.1"}`))
 	h2 := node.HashFromRawOptions([]byte(`{"type":"ss","server":"2.2.2.2"}`))

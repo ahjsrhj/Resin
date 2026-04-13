@@ -19,6 +19,7 @@ type chainedRoutePool struct {
 	entries         map[node.Hash]*node.NodeEntry
 	platformsByID   map[string]*platform.Platform
 	platformsByName map[string]*platform.Platform
+	chainByTarget   map[node.Hash]node.Hash
 }
 
 func (p *chainedRoutePool) GetEntry(hash node.Hash) (*node.NodeEntry, bool) {
@@ -42,6 +43,14 @@ func (p *chainedRoutePool) GetPlatform(id string) (*platform.Platform, bool) {
 func (p *chainedRoutePool) GetPlatformByName(name string) (*platform.Platform, bool) {
 	plat, ok := p.platformsByName[name]
 	return plat, ok
+}
+
+func (p *chainedRoutePool) ResolveNodeChainNodeHash(hash node.Hash) (node.Hash, bool) {
+	if p.chainByTarget == nil {
+		return node.Zero, false
+	}
+	chainHash, ok := p.chainByTarget[hash]
+	return chainHash, ok
 }
 
 func (p *chainedRoutePool) RangePlatforms(fn func(*platform.Platform) bool) {
@@ -88,14 +97,16 @@ func buildChainedRouteEnv(t *testing.T) (*routing.Router, *chainedRoutePool, nod
 	entryHash := node.HashFromRawOptions(entryRaw)
 	targetHash := node.HashFromRawOptions(targetRaw)
 
-	makeNode := func(hash node.Hash, raw []byte, egress string) *node.NodeEntry {
+	makeNode := func(hash node.Hash, raw []byte, egress string, withLatency bool) *node.NodeEntry {
 		entry := node.NewNodeEntry(hash, raw, time.Now(), 16)
 		entry.AddSubscriptionID("sub-1")
 		entry.SetEgressIP(netip.MustParseAddr(egress))
-		entry.LatencyTable.LoadEntry("example.com", node.DomainLatencyStats{
-			Ewma:        25 * time.Millisecond,
-			LastUpdated: time.Now(),
-		})
+		if withLatency {
+			entry.LatencyTable.LoadEntry("example.com", node.DomainLatencyStats{
+				Ewma:        25 * time.Millisecond,
+				LastUpdated: time.Now(),
+			})
+		}
 		ob := testutil.NewNoopOutbound()
 		entry.Outbound.Store(&ob)
 		return entry
@@ -103,11 +114,12 @@ func buildChainedRouteEnv(t *testing.T) (*routing.Router, *chainedRoutePool, nod
 
 	pool := &chainedRoutePool{
 		entries: map[node.Hash]*node.NodeEntry{
-			entryHash:  makeNode(entryHash, entryRaw, "1.1.1.1"),
-			targetHash: makeNode(targetHash, targetRaw, "2.2.2.2"),
+			entryHash:  makeNode(entryHash, entryRaw, "1.1.1.1", true),
+			targetHash: makeNode(targetHash, targetRaw, "2.2.2.2", true),
 		},
 		platformsByID:   make(map[string]*platform.Platform),
 		platformsByName: make(map[string]*platform.Platform),
+		chainByTarget:   make(map[node.Hash]node.Hash),
 	}
 
 	plat := platform.NewConfiguredPlatform(
@@ -141,6 +153,25 @@ func buildChainedRouteEnv(t *testing.T) (*routing.Router, *chainedRoutePool, nod
 	return router, pool, entryHash, targetHash
 }
 
+func buildTripleHopRouteEnv(t *testing.T) (*routing.Router, *chainedRoutePool, node.Hash, node.Hash, node.Hash) {
+	t.Helper()
+
+	router, pool, entryHash, targetHash := buildChainedRouteEnv(t)
+	chainHost, chainPort := closedTCPAddr(t)
+	chainRaw := socksOutboundRaw(chainHost, chainPort)
+	chainHash := node.HashFromRawOptions(chainRaw)
+
+	chainEntry := node.NewNodeEntry(chainHash, chainRaw, time.Now(), 16)
+	chainEntry.AddSubscriptionID("sub-1")
+	chainEntry.SetEgressIP(netip.MustParseAddr("3.3.3.3"))
+	ob := testutil.NewNoopOutbound()
+	chainEntry.Outbound.Store(&ob)
+	pool.entries[chainHash] = chainEntry
+	pool.chainByTarget[targetHash] = chainHash
+
+	return router, pool, entryHash, chainHash, targetHash
+}
+
 func TestResolveRoutedOutbound_WithEntryNodeBuildsChainedOutboundAndCaches(t *testing.T) {
 	router, pool, entryHash, targetHash := buildChainedRouteEnv(t)
 	chainPool := NewChainedOutboundPool()
@@ -169,6 +200,64 @@ func TestResolveRoutedOutbound_WithEntryNodeBuildsChainedOutboundAndCaches(t *te
 	}
 	if first.Outbound != second.Outbound {
 		t.Fatal("expected chained outbound bundle to be reused for the same entry/target pair")
+	}
+}
+
+func TestResolveRoutedOutbound_WithEntryAndSubscriptionChainBuildsThreeHopOutbound(t *testing.T) {
+	router, pool, entryHash, chainHash, targetHash := buildTripleHopRouteEnv(t)
+	chainPool := NewChainedOutboundPool()
+	t.Cleanup(chainPool.CloseAll)
+
+	routed, perr := resolveRoutedOutbound(router, pool, pool, chainPool, "plat", "", "example.com:443")
+	if perr != nil {
+		t.Fatalf("resolveRoutedOutbound: %v", perr)
+	}
+
+	if routed.PassiveHealth {
+		t.Fatal("expected multi-hop route to disable passive health")
+	}
+	if routed.EntryNodeHash != entryHash {
+		t.Fatalf("entry node hash = %s, want %s", routed.EntryNodeHash.Hex(), entryHash.Hex())
+	}
+	if routed.ChainNodeHash != chainHash {
+		t.Fatalf("chain node hash = %s, want %s", routed.ChainNodeHash.Hex(), chainHash.Hex())
+	}
+	if routed.Route.NodeHash != targetHash {
+		t.Fatalf("target node hash = %s, want %s", routed.Route.NodeHash.Hex(), targetHash.Hex())
+	}
+	if routed.TransportKey != chainTransportKey(entryHash, chainHash, targetHash) {
+		t.Fatalf("transport key = %+v, want %+v", routed.TransportKey, chainTransportKey(entryHash, chainHash, targetHash))
+	}
+}
+
+func TestResolveRoutedOutbound_DeduplicatesEntryAndSubscriptionChainHop(t *testing.T) {
+	router, pool, entryHash, targetHash := buildChainedRouteEnv(t)
+	pool.chainByTarget[targetHash] = entryHash
+	chainPool := NewChainedOutboundPool()
+	t.Cleanup(chainPool.CloseAll)
+
+	routed, perr := resolveRoutedOutbound(router, pool, pool, chainPool, "plat", "", "example.com:443")
+	if perr != nil {
+		t.Fatalf("resolveRoutedOutbound: %v", perr)
+	}
+	if routed.TransportKey != chainTransportKey(entryHash, targetHash) {
+		t.Fatalf("transport key = %+v, want %+v", routed.TransportKey, chainTransportKey(entryHash, targetHash))
+	}
+}
+
+func TestResolveRoutedOutbound_RejectsTargetDuplicatingSubscriptionChainHop(t *testing.T) {
+	router, pool, _, targetHash := buildChainedRouteEnv(t)
+	pool.platformsByID["plat-1"].EntryNodeHash = node.Zero
+	pool.chainByTarget[targetHash] = targetHash
+	chainPool := NewChainedOutboundPool()
+	t.Cleanup(chainPool.CloseAll)
+
+	_, perr := resolveRoutedOutbound(router, pool, pool, chainPool, "plat", "", "example.com:443")
+	if perr == nil {
+		t.Fatal("expected resolveRoutedOutbound to reject target/chain hop conflict")
+	}
+	if perr != ErrNoAvailableNodes {
+		t.Fatalf("error = %v, want %v", perr, ErrNoAvailableNodes)
 	}
 }
 

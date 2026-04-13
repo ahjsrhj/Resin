@@ -27,6 +27,7 @@ type SubscriptionResponse struct {
 	SourceType              string `json:"source_type"`
 	URL                     string `json:"url"`
 	Content                 string `json:"content"`
+	ChainNodeHash           string `json:"chain_node_hash"`
 	UpdateInterval          string `json:"update_interval"`
 	NodeCount               int    `json:"node_count"`
 	HealthyNodeCount        int    `json:"healthy_node_count"`
@@ -71,6 +72,7 @@ func (s *ControlPlaneService) subToResponse(sub *subscription.Subscription) Subs
 		SourceType:              sub.SourceType(),
 		URL:                     sub.URL(),
 		Content:                 sub.Content(),
+		ChainNodeHash:           sub.ChainNodeHash(),
 		UpdateInterval:          time.Duration(sub.UpdateIntervalNs()).String(),
 		NodeCount:               nodeCount,
 		HealthyNodeCount:        healthyNodeCount,
@@ -126,6 +128,7 @@ type CreateSubscriptionRequest struct {
 	SourceType              *string `json:"source_type"`
 	URL                     *string `json:"url"`
 	Content                 *string `json:"content"`
+	ChainNodeHash           *string `json:"chain_node_hash"`
 	UpdateInterval          *string `json:"update_interval"`
 	Enabled                 *bool   `json:"enabled"`
 	Ephemeral               *bool   `json:"ephemeral"`
@@ -146,6 +149,32 @@ func parseSubscriptionSourceType(raw *string) (string, *ServiceError) {
 	default:
 		return "", invalidArg("source_type: must be remote or local")
 	}
+}
+
+func normalizeSubscriptionChainNodeHash(raw string) string {
+	return strings.TrimSpace(raw)
+}
+
+func (s *ControlPlaneService) validateSubscriptionChainNodeHash(raw string) *ServiceError {
+	normalized := normalizeSubscriptionChainNodeHash(raw)
+	if normalized == "" {
+		return nil
+	}
+	hash, err := node.ParseHex(normalized)
+	if err != nil {
+		return invalidArg("chain_node_hash: invalid node hash")
+	}
+	if s == nil || s.Pool == nil {
+		return nil
+	}
+	entry, ok := s.Pool.GetEntry(hash)
+	if !ok {
+		return invalidArg("chain_node_hash: node not found")
+	}
+	if !entry.HasOutbound() {
+		return invalidArg("chain_node_hash: node outbound not ready")
+	}
+	return nil
 }
 
 // CreateSubscription creates a new subscription.
@@ -217,6 +246,13 @@ func (s *ControlPlaneService) CreateSubscription(req CreateSubscriptionRequest) 
 		}
 		ephemeralNodeEvictDelay = d
 	}
+	chainNodeHash := ""
+	if req.ChainNodeHash != nil {
+		chainNodeHash = normalizeSubscriptionChainNodeHash(*req.ChainNodeHash)
+	}
+	if err := s.validateSubscriptionChainNodeHash(chainNodeHash); err != nil {
+		return nil, err
+	}
 
 	id := uuid.New().String()
 	now := time.Now().UnixNano()
@@ -227,6 +263,7 @@ func (s *ControlPlaneService) CreateSubscription(req CreateSubscriptionRequest) 
 		SourceType:                sourceType,
 		URL:                       subURL,
 		Content:                   content,
+		ChainNodeHash:             chainNodeHash,
 		UpdateIntervalNs:          int64(updateInterval),
 		Enabled:                   enabled,
 		Ephemeral:                 ephemeral,
@@ -242,6 +279,7 @@ func (s *ControlPlaneService) CreateSubscription(req CreateSubscriptionRequest) 
 	sub.SetFetchConfig(subURL, int64(updateInterval))
 	sub.SetSourceType(sourceType)
 	sub.SetContent(content)
+	sub.SetChainNodeHash(chainNodeHash)
 	sub.SetEphemeralNodeEvictDelayNs(int64(ephemeralNodeEvictDelay))
 	sub.CreatedAtNs = now
 	sub.UpdatedAtNs = now
@@ -318,6 +356,15 @@ func (s *ControlPlaneService) UpdateSubscription(id string, patchJSON json.RawMe
 			contentChanged = true
 		}
 	}
+	newChainNodeHash := sub.ChainNodeHash()
+	if chainNodeHash, ok, err := patch.optionalString("chain_node_hash"); err != nil {
+		return nil, err
+	} else if ok {
+		newChainNodeHash = normalizeSubscriptionChainNodeHash(chainNodeHash)
+	}
+	if err := s.validateSubscriptionChainNodeHash(newChainNodeHash); err != nil {
+		return nil, err
+	}
 
 	newInterval := sub.UpdateIntervalNs()
 	if d, ok, err := patch.optionalDurationString("update_interval"); err != nil {
@@ -363,6 +410,7 @@ func (s *ControlPlaneService) UpdateSubscription(id string, patchJSON json.RawMe
 		SourceType:                sourceType,
 		URL:                       newURL,
 		Content:                   newContent,
+		ChainNodeHash:             newChainNodeHash,
 		UpdateIntervalNs:          newInterval,
 		Enabled:                   newEnabled,
 		Ephemeral:                 newEphemeral,
@@ -377,6 +425,7 @@ func (s *ControlPlaneService) UpdateSubscription(id string, patchJSON json.RawMe
 	// Apply side-effects via scheduler.
 	sub.SetFetchConfig(newURL, newInterval)
 	sub.SetContent(newContent)
+	sub.SetChainNodeHash(newChainNodeHash)
 	sub.SetEphemeral(newEphemeral)
 	sub.SetEphemeralNodeEvictDelayNs(newEphemeralNodeEvictDelay)
 	sub.UpdatedAtNs = now

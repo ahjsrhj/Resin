@@ -2,6 +2,7 @@
 package subscription
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -111,10 +112,11 @@ type Subscription struct {
 	opMu sync.Mutex
 
 	// Mutable fields guarded by mu.
-	mu         sync.RWMutex
-	url        string
-	sourceType string
-	content    string
+	mu            sync.RWMutex
+	url           string
+	sourceType    string
+	content       string
+	chainNodeHash string
 	// updateIntervalNs is the configured subscription refresh interval.
 	updateIntervalNs int64
 	name             string
@@ -238,6 +240,20 @@ func (s *Subscription) SetContent(content string) {
 		s.content = content
 		s.configVersion.Add(1)
 	}
+	s.mu.Unlock()
+}
+
+// ChainNodeHash returns the configured subscription chain node hash (thread-safe).
+func (s *Subscription) ChainNodeHash() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.chainNodeHash
+}
+
+// SetChainNodeHash updates the configured subscription chain node hash (thread-safe).
+func (s *Subscription) SetChainNodeHash(chainNodeHash string) {
+	s.mu.Lock()
+	s.chainNodeHash = strings.TrimSpace(chainNodeHash)
 	s.mu.Unlock()
 }
 

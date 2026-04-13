@@ -51,6 +51,24 @@ func TestMigrateStateDB_UpgradesLegacyPlatformsColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create legacy platforms table: %v", err)
 	}
+	_, err = db.Exec(`
+		CREATE TABLE subscriptions (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			source_type TEXT NOT NULL DEFAULT 'remote',
+			url TEXT NOT NULL,
+			content TEXT NOT NULL DEFAULT '',
+			update_interval_ns INTEGER NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			ephemeral INTEGER NOT NULL DEFAULT 0,
+			ephemeral_node_evict_delay_ns INTEGER NOT NULL,
+			created_at_ns INTEGER NOT NULL,
+			updated_at_ns INTEGER NOT NULL
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create legacy subscriptions table: %v", err)
+	}
 
 	if err := MigrateStateDB(db); err != nil {
 		t.Fatalf("MigrateStateDB: %v", err)
@@ -64,6 +82,9 @@ func TestMigrateStateDB_UpgradesLegacyPlatformsColumns(t *testing.T) {
 	}
 	if ok, err := hasTableColumn(db, "platforms", "entry_node_hash"); err != nil || !ok {
 		t.Fatalf("expected migrated column entry_node_hash, ok=%v err=%v", ok, err)
+	}
+	if ok, err := hasTableColumn(db, "subscriptions", "chain_node_hash"); err != nil || !ok {
+		t.Fatalf("expected migrated column chain_node_hash, ok=%v err=%v", ok, err)
 	}
 }
 
@@ -92,6 +113,24 @@ func TestMigrateStateDB_LegacyBaselineAdvancesToLatest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create legacy latest-like platforms table: %v", err)
 	}
+	_, err = db.Exec(`
+		CREATE TABLE subscriptions (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			source_type TEXT NOT NULL DEFAULT 'remote',
+			url TEXT NOT NULL,
+			content TEXT NOT NULL DEFAULT '',
+			update_interval_ns INTEGER NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			ephemeral INTEGER NOT NULL DEFAULT 0,
+			ephemeral_node_evict_delay_ns INTEGER NOT NULL,
+			created_at_ns INTEGER NOT NULL,
+			updated_at_ns INTEGER NOT NULL
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create legacy subscriptions table: %v", err)
+	}
 
 	if err := MigrateStateDB(db); err != nil {
 		t.Fatalf("MigrateStateDB: %v", err)
@@ -106,8 +145,8 @@ func TestMigrateStateDB_LegacyBaselineAdvancesToLatest(t *testing.T) {
 	if dirty {
 		t.Fatalf("schema_migrations dirty=true")
 	}
-	if version != stateVersionAddEntryNodeHash {
-		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddEntryNodeHash)
+	if version != stateVersionAddSubscriptionChainNodeHash {
+		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddSubscriptionChainNodeHash)
 	}
 }
 
@@ -135,6 +174,24 @@ func TestMigrateStateDB_NormalizesLegacyRandomMissAction(t *testing.T) {
 	`)
 	if err != nil {
 		t.Fatalf("create legacy latest-like platforms table: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE subscriptions (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			source_type TEXT NOT NULL DEFAULT 'remote',
+			url TEXT NOT NULL,
+			content TEXT NOT NULL DEFAULT '',
+			update_interval_ns INTEGER NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			ephemeral INTEGER NOT NULL DEFAULT 0,
+			ephemeral_node_evict_delay_ns INTEGER NOT NULL,
+			created_at_ns INTEGER NOT NULL,
+			updated_at_ns INTEGER NOT NULL
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create legacy subscriptions table: %v", err)
 	}
 	_, err = db.Exec(`
 		INSERT INTO platforms (
@@ -178,8 +235,8 @@ func TestMigrateStateDB_NormalizesLegacyRandomMissAction(t *testing.T) {
 	if dirty {
 		t.Fatalf("schema_migrations dirty=true")
 	}
-	if version != stateVersionAddEntryNodeHash {
-		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddEntryNodeHash)
+	if version != stateVersionAddSubscriptionChainNodeHash {
+		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddSubscriptionChainNodeHash)
 	}
 }
 
@@ -240,7 +297,7 @@ func TestStateRepo_Platforms_CRUD(t *testing.T) {
 	p := model.Platform{
 		ID: "plat-1", Name: "Default", StickyTTLNs: 1000,
 		RegexFilters: []string{}, RegionFilters: []string{},
-		EntryNodeHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		EntryNodeHash:          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		ReverseProxyMissAction: "TREAT_AS_EMPTY", AllocationPolicy: "BALANCED",
 		UpdatedAtNs: now,
 	}
@@ -443,6 +500,7 @@ func TestStateRepo_Subscriptions_CRUD(t *testing.T) {
 
 	s := model.Subscription{
 		ID: "sub-1", Name: "MySub", URL: "https://example.com/sub",
+		ChainNodeHash:    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		UpdateIntervalNs: int64(30 * time.Second), Enabled: true,
 		Ephemeral: false, EphemeralNodeEvictDelayNs: int64(72 * time.Hour), CreatedAtNs: now, UpdatedAtNs: now,
 	}
@@ -457,15 +515,22 @@ func TestStateRepo_Subscriptions_CRUD(t *testing.T) {
 	if len(list) != 1 || list[0].URL != "https://example.com/sub" {
 		t.Fatalf("unexpected list: %+v", list)
 	}
+	if got, want := list[0].ChainNodeHash, s.ChainNodeHash; got != want {
+		t.Fatalf("chain_node_hash: got %q, want %q", got, want)
+	}
 
 	// Update.
 	s.URL = "https://example.com/sub-v2"
+	s.ChainNodeHash = ""
 	if err := repo.UpsertSubscription(s); err != nil {
 		t.Fatal(err)
 	}
 	list, _ = repo.ListSubscriptions()
 	if list[0].URL != "https://example.com/sub-v2" {
 		t.Fatalf("expected updated URL, got %s", list[0].URL)
+	}
+	if list[0].ChainNodeHash != "" {
+		t.Fatalf("expected cleared chain_node_hash, got %q", list[0].ChainNodeHash)
 	}
 
 	// Delete.
@@ -484,6 +549,7 @@ func TestStateRepo_Subscription_CreatedAtNsPreserved(t *testing.T) {
 
 	s := model.Subscription{
 		ID: "sub-1", Name: "MySub", URL: "https://example.com",
+		ChainNodeHash:    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		UpdateIntervalNs: int64(30 * time.Second), Enabled: true,
 		Ephemeral: false, EphemeralNodeEvictDelayNs: int64(72 * time.Hour),
 		CreatedAtNs: originalCreatedAt, UpdatedAtNs: originalCreatedAt,
@@ -516,6 +582,9 @@ func TestStateRepo_Subscription_CreatedAtNsPreserved(t *testing.T) {
 	if list[0].UpdatedAtNs != int64(2000000) {
 		t.Fatalf("updated_at_ns should have been updated, got %d", list[0].UpdatedAtNs)
 	}
+	if list[0].ChainNodeHash != "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
+		t.Fatalf("chain_node_hash should be preserved, got %q", list[0].ChainNodeHash)
+	}
 }
 
 func TestStateRepo_Subscription_LocalSourcePersists(t *testing.T) {
@@ -528,6 +597,7 @@ func TestStateRepo_Subscription_LocalSourcePersists(t *testing.T) {
 		SourceType:                "local",
 		URL:                       "",
 		Content:                   "vmess://example",
+		ChainNodeHash:             "cccccccccccccccccccccccccccccccc",
 		UpdateIntervalNs:          int64(time.Hour),
 		Enabled:                   true,
 		Ephemeral:                 false,
@@ -551,6 +621,9 @@ func TestStateRepo_Subscription_LocalSourcePersists(t *testing.T) {
 	}
 	if list[0].Content != "vmess://example" {
 		t.Fatalf("content: got %q", list[0].Content)
+	}
+	if list[0].ChainNodeHash != "cccccccccccccccccccccccccccccccc" {
+		t.Fatalf("chain_node_hash: got %q", list[0].ChainNodeHash)
 	}
 }
 

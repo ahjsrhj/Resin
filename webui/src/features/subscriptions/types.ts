@@ -4,6 +4,7 @@ export type Subscription = {
   source_type: "remote" | "local";
   url: string;
   content: string;
+  chain_node_hash: string;
   update_interval: string;
   node_count: number;
   healthy_node_count: number;
@@ -28,6 +29,7 @@ export type SubscriptionCreateInput = {
   source_type?: "remote" | "local";
   url?: string;
   content?: string;
+  chain_node_hash?: string;
   update_interval?: string;
   enabled?: boolean;
   ephemeral?: boolean;
@@ -38,6 +40,7 @@ export type SubscriptionUpdateInput = {
   name?: string;
   url?: string;
   content?: string;
+  chain_node_hash?: string;
   update_interval?: string;
   enabled?: boolean;
   ephemeral?: boolean;
