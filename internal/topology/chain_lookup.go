@@ -1,33 +1,42 @@
 package topology
 
-import "github.com/Resinat/Resin/internal/node"
+import (
+	"strings"
 
-func (p *GlobalNodePool) ResolveNodeChainNodeHash(hash node.Hash) (node.Hash, bool) {
+	"github.com/Resinat/Resin/internal/node"
+	"github.com/Resinat/Resin/internal/subscription"
+)
+
+func (p *GlobalNodePool) ResolveNodeChainPlatformID(hash node.Hash) (string, bool) {
 	if p == nil || p.subLookup == nil {
-		return node.Zero, false
+		return "", false
 	}
 
 	entry, ok := p.GetEntry(hash)
 	if !ok || entry == nil {
-		return node.Zero, false
+		return "", false
 	}
 	subIDs := entry.SubscriptionIDs()
 	if len(subIDs) == 0 {
-		return node.Zero, false
+		return "", false
 	}
 
-	if chainHash, ok := p.pickNodeChainNodeHash(hash, subIDs, true); ok {
-		return chainHash, true
+	if sub, ok := p.pickNodeChainSubscription(hash, subIDs, true); ok {
+		return resolveSubscriptionChainPlatformID(sub)
 	}
-	return p.pickNodeChainNodeHash(hash, subIDs, false)
+	sub, ok := p.pickNodeChainSubscription(hash, subIDs, false)
+	if !ok {
+		return "", false
+	}
+	return resolveSubscriptionChainPlatformID(sub)
 }
 
-func (p *GlobalNodePool) pickNodeChainNodeHash(hash node.Hash, subIDs []string, enabledOnly bool) (node.Hash, bool) {
+func (p *GlobalNodePool) pickNodeChainSubscription(hash node.Hash, subIDs []string, enabledOnly bool) (*subscription.Subscription, bool) {
 	var (
 		bestFound       bool
 		bestCreatedAtNs int64
 		bestSubID       string
-		bestChainHash   node.Hash
+		bestSub         *subscription.Subscription
 	)
 
 	for _, subID := range subIDs {
@@ -45,7 +54,6 @@ func (p *GlobalNodePool) pickNodeChainNodeHash(hash node.Hash, subIDs []string, 
 			}
 		}
 
-		chainHash := resolveSubscriptionChainHash(sub)
 		createdAtNs := sub.CreatedAtNs
 		if !bestFound ||
 			createdAtNs < bestCreatedAtNs ||
@@ -53,30 +61,23 @@ func (p *GlobalNodePool) pickNodeChainNodeHash(hash node.Hash, subIDs []string, 
 			bestFound = true
 			bestCreatedAtNs = createdAtNs
 			bestSubID = subID
-			bestChainHash = chainHash
+			bestSub = sub
 		}
 	}
 
 	if !bestFound {
-		return node.Zero, false
+		return nil, false
 	}
-	return bestChainHash, true
+	return bestSub, true
 }
 
-func resolveSubscriptionChainHash(sub interface{ ChainNodeHash() string }) node.Hash {
+func resolveSubscriptionChainPlatformID(sub interface{ ChainPlatformID() string }) (string, bool) {
 	if sub == nil {
-		return node.Zero
+		return "", false
 	}
-	return parseSubscriptionChainHash(sub.ChainNodeHash())
-}
-
-func parseSubscriptionChainHash(raw string) node.Hash {
-	if raw == "" {
-		return node.Zero
+	platformID := strings.TrimSpace(sub.ChainPlatformID())
+	if platformID == "" {
+		return "", false
 	}
-	hash, err := node.ParseHex(raw)
-	if err != nil {
-		return node.Zero
-	}
-	return hash
+	return platformID, true
 }

@@ -146,6 +146,13 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "本地": "Local",
   "从 HTTP/HTTPS 订阅链接拉取内容": "Fetch content from HTTP/HTTPS subscription URL",
   "直接填写订阅文本，不经过网络拉取": "Provide subscription text directly without network fetch",
+  "代理链平台": "Chain Platform",
+  "代理链平台格式无效": "Chain platform format is invalid",
+  "未指定代理链平台": "No chain platform selected",
+  "当前配置平台不可用 · {{id}}": "Configured platform unavailable · {{id}}",
+  "代理链平台列表加载失败": "Failed to load chain platform list",
+  "代理链平台会为当前订阅动态选择前置节点。": "The chain platform dynamically selects the upstream node for this subscription.",
+  "正在加载平台...": "Loading platforms...",
   "支持格式（每行一个样例）：": "Supported formats (one example per line):",
   "支持格式：": "Supported formats:",
   "sing-box / Clash|Mihomo / URI（vmess:// vless:// trojan:// ss:// ...）或他们的 base64 格式":

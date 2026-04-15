@@ -11,7 +11,6 @@ import (
 
 	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/netutil"
-	"github.com/Resinat/Resin/internal/node"
 	"github.com/Resinat/Resin/internal/outbound"
 	"github.com/Resinat/Resin/internal/platform"
 	"github.com/Resinat/Resin/internal/routing"
@@ -21,7 +20,6 @@ import (
 type PlatformLookup interface {
 	GetPlatform(id string) (*platform.Platform, bool)
 	GetPlatformByName(name string) (*platform.Platform, bool)
-	ResolveNodeChainNodeHash(hash node.Hash) (node.Hash, bool)
 }
 
 // ReverseProxyConfig holds dependencies for the reverse proxy.
@@ -392,7 +390,7 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	routed, routeErr := resolveRoutedOutbound(p.router, p.pool, p.platLook, p.chainPool, parsed.PlatformName, account, parsed.Host)
+	routed, routeErr := resolveRoutedOutbound(p.router, p.pool, p.chainPool, parsed.PlatformName, account, parsed.Host)
 	if routeErr != nil {
 		lifecycle.setProxyError(routeErr)
 		lifecycle.setHTTPStatus(routeErr.HTTPCode)

@@ -1,19 +1,19 @@
 package outbound
 
 import (
+	"errors"
 	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/Resinat/Resin/internal/node"
-	"github.com/Resinat/Resin/internal/platform"
+	"github.com/Resinat/Resin/internal/routing"
 	"github.com/Resinat/Resin/internal/testutil"
 )
 
 type chainResolverPool struct {
-	entries map[node.Hash]*node.NodeEntry
-	plat    *platform.Platform
-	chain   map[node.Hash]node.Hash
+	entries  map[node.Hash]*node.NodeEntry
+	chainIDs map[node.Hash]string
 }
 
 func (p *chainResolverPool) GetEntry(hash node.Hash) (*node.NodeEntry, bool) {
@@ -23,19 +23,28 @@ func (p *chainResolverPool) GetEntry(hash node.Hash) (*node.NodeEntry, bool) {
 
 func (p *chainResolverPool) RangeNodes(fn func(node.Hash, *node.NodeEntry) bool) {}
 
-func (p *chainResolverPool) GetPlatform(id string) (*platform.Platform, bool) {
-	if p.plat == nil || p.plat.ID != id {
-		return nil, false
+func (p *chainResolverPool) ResolveNodeChainPlatformID(hash node.Hash) (string, bool) {
+	if p.chainIDs == nil {
+		return "", false
 	}
-	return p.plat, true
+	platformID, ok := p.chainIDs[hash]
+	return platformID, ok
 }
 
-func (p *chainResolverPool) ResolveNodeChainNodeHash(hash node.Hash) (node.Hash, bool) {
-	if p.chain == nil {
-		return node.Zero, false
+type chainResolverRouter struct {
+	routes map[string]node.Hash
+	errs   map[string]error
+}
+
+func (r *chainResolverRouter) RouteRequestByID(platformID, account, target string) (routing.RouteResult, error) {
+	if err := r.errs[platformID]; err != nil {
+		return routing.RouteResult{}, err
 	}
-	chainHash, ok := p.chain[hash]
-	return chainHash, ok
+	hash, ok := r.routes[platformID]
+	if !ok {
+		return routing.RouteResult{}, errors.New("platform route not found")
+	}
+	return routing.RouteResult{PlatformID: platformID, NodeHash: hash}, nil
 }
 
 func newResolverNode(raw []byte, egress string) (node.Hash, *node.NodeEntry) {
@@ -47,59 +56,60 @@ func newResolverNode(raw []byte, egress string) (node.Hash, *node.NodeEntry) {
 	return hash, entry
 }
 
-func TestResolveForwardNodeChain_BuildsThreeHopChain(t *testing.T) {
-	entryHash, entryNode := newResolverNode([]byte(`{"type":"socks","server":"1.1.1.1","server_port":1080}`), "1.1.1.1")
+func TestResolveForwardNodeChain_BuildsTwoHopChain(t *testing.T) {
 	chainHash, chainNode := newResolverNode([]byte(`{"type":"socks","server":"2.2.2.2","server_port":1080}`), "2.2.2.2")
 	targetHash, targetNode := newResolverNode([]byte(`{"type":"socks","server":"3.3.3.3","server_port":1080}`), "3.3.3.3")
 
 	pool := &chainResolverPool{
 		entries: map[node.Hash]*node.NodeEntry{
-			entryHash:  entryNode,
 			chainHash:  chainNode,
 			targetHash: targetNode,
 		},
-		plat: &platform.Platform{ID: "plat-1", EntryNodeHash: entryHash},
-		chain: map[node.Hash]node.Hash{
-			targetHash: chainHash,
+		chainIDs: map[node.Hash]string{
+			targetHash: "plat-chain",
+		},
+	}
+	router := &chainResolverRouter{
+		routes: map[string]node.Hash{
+			"plat-chain": chainHash,
 		},
 	}
 
-	chain, err := ResolveForwardNodeChain(pool, pool, pool, "plat-1", targetHash)
-	if err != nil {
-		t.Fatalf("ResolveForwardNodeChain: %v", err)
-	}
-	if len(chain.Hops) != 3 {
-		t.Fatalf("hop count = %d, want 3", len(chain.Hops))
-	}
-	if chain.Hops[0] != entryHash || chain.Hops[1] != chainHash || chain.Hops[2] != targetHash {
-		t.Fatalf("resolved hops = %v", chain.Hops)
-	}
-}
-
-func TestResolveForwardNodeChain_DeduplicatesRepeatedPrefixHop(t *testing.T) {
-	entryHash, entryNode := newResolverNode([]byte(`{"type":"socks","server":"1.1.1.1","server_port":1080}`), "1.1.1.1")
-	targetHash, targetNode := newResolverNode([]byte(`{"type":"socks","server":"3.3.3.3","server_port":1080}`), "3.3.3.3")
-
-	pool := &chainResolverPool{
-		entries: map[node.Hash]*node.NodeEntry{
-			entryHash:  entryNode,
-			targetHash: targetNode,
-		},
-		plat: &platform.Platform{ID: "plat-1", EntryNodeHash: entryHash},
-		chain: map[node.Hash]node.Hash{
-			targetHash: entryHash,
-		},
-	}
-
-	chain, err := ResolveForwardNodeChain(pool, pool, pool, "plat-1", targetHash)
+	chain, err := ResolveForwardNodeChain(pool, router, pool, targetHash, "example.com:443")
 	if err != nil {
 		t.Fatalf("ResolveForwardNodeChain: %v", err)
 	}
 	if len(chain.Hops) != 2 {
 		t.Fatalf("hop count = %d, want 2", len(chain.Hops))
 	}
-	if chain.Hops[0] != entryHash || chain.Hops[1] != targetHash {
+	if chain.Hops[0] != chainHash || chain.Hops[1] != targetHash {
 		t.Fatalf("resolved hops = %v", chain.Hops)
+	}
+	if chain.ChainNodeHash != chainHash {
+		t.Fatalf("chain node hash = %s, want %s", chain.ChainNodeHash.Hex(), chainHash.Hex())
+	}
+}
+
+func TestResolveForwardNodeChain_DeduplicatesRepeatedChainHop(t *testing.T) {
+	targetHash, targetNode := newResolverNode([]byte(`{"type":"socks","server":"3.3.3.3","server_port":1080}`), "3.3.3.3")
+
+	pool := &chainResolverPool{
+		entries: map[node.Hash]*node.NodeEntry{
+			targetHash: targetNode,
+		},
+		chainIDs: map[node.Hash]string{
+			targetHash: "plat-chain",
+		},
+	}
+	router := &chainResolverRouter{
+		routes: map[string]node.Hash{
+			"plat-chain": targetHash,
+		},
+	}
+
+	_, err := ResolveForwardNodeChain(pool, router, pool, targetHash, "example.com:443")
+	if err != ErrChainTargetConflict {
+		t.Fatalf("err = %v, want %v", err, ErrChainTargetConflict)
 	}
 }
 
@@ -110,16 +120,105 @@ func TestResolveProbeNodeChain_RejectsTargetConflict(t *testing.T) {
 		entries: map[node.Hash]*node.NodeEntry{
 			targetHash: targetNode,
 		},
-		chain: map[node.Hash]node.Hash{
-			targetHash: targetHash,
+		chainIDs: map[node.Hash]string{
+			targetHash: "plat-chain",
+		},
+	}
+	router := &chainResolverRouter{
+		routes: map[string]node.Hash{
+			"plat-chain": targetHash,
 		},
 	}
 
-	_, err := ResolveProbeNodeChain(pool, pool, targetHash)
-	if err == nil {
-		t.Fatal("expected ResolveProbeNodeChain to reject target conflict")
-	}
+	_, err := ResolveProbeNodeChain(pool, router, pool, targetHash, "https://example.com")
 	if err != ErrChainTargetConflict {
 		t.Fatalf("err = %v, want %v", err, ErrChainTargetConflict)
+	}
+}
+
+func TestResolveForwardNodeChain_SkipsMissingSubscriptionChainHop(t *testing.T) {
+	targetHash, targetNode := newResolverNode([]byte(`{"type":"socks","server":"3.3.3.3","server_port":1080}`), "3.3.3.3")
+
+	pool := &chainResolverPool{
+		entries: map[node.Hash]*node.NodeEntry{
+			targetHash: targetNode,
+		},
+		chainIDs: map[node.Hash]string{
+			targetHash: "plat-chain",
+		},
+	}
+	router := &chainResolverRouter{
+		routes: map[string]node.Hash{
+			"plat-chain": node.HashFromRawOptions([]byte(`{"type":"socks","server":"8.8.8.8","server_port":1080}`)),
+		},
+	}
+
+	chain, err := ResolveForwardNodeChain(pool, router, pool, targetHash, "example.com:443")
+	if err != nil {
+		t.Fatalf("ResolveForwardNodeChain: %v", err)
+	}
+	if len(chain.Hops) != 1 {
+		t.Fatalf("hop count = %d, want 1", len(chain.Hops))
+	}
+	if chain.Hops[0] != targetHash {
+		t.Fatalf("resolved hops = %v", chain.Hops)
+	}
+	if chain.ChainNodeHash != node.Zero {
+		t.Fatalf("chain node hash = %s, want zero", chain.ChainNodeHash.Hex())
+	}
+}
+
+func TestResolveForwardNodeChain_DegradesWhenChainPlatformRoutingFails(t *testing.T) {
+	targetHash, targetNode := newResolverNode([]byte(`{"type":"socks","server":"3.3.3.3","server_port":1080}`), "3.3.3.3")
+
+	pool := &chainResolverPool{
+		entries: map[node.Hash]*node.NodeEntry{
+			targetHash: targetNode,
+		},
+		chainIDs: map[node.Hash]string{
+			targetHash: "plat-chain",
+		},
+	}
+	router := &chainResolverRouter{
+		errs: map[string]error{
+			"plat-chain": routing.ErrPlatformNotFound,
+		},
+	}
+
+	chain, err := ResolveForwardNodeChain(pool, router, pool, targetHash, "example.com:443")
+	if err != nil {
+		t.Fatalf("ResolveForwardNodeChain: %v", err)
+	}
+	if len(chain.Hops) != 1 || chain.Hops[0] != targetHash {
+		t.Fatalf("resolved hops = %v", chain.Hops)
+	}
+}
+
+func TestResolveProbeNodeChain_SkipsMissingSubscriptionChainHop(t *testing.T) {
+	targetHash, targetNode := newResolverNode([]byte(`{"type":"socks","server":"3.3.3.3","server_port":1080}`), "3.3.3.3")
+
+	pool := &chainResolverPool{
+		entries: map[node.Hash]*node.NodeEntry{
+			targetHash: targetNode,
+		},
+		chainIDs: map[node.Hash]string{
+			targetHash: "plat-chain",
+		},
+	}
+	router := &chainResolverRouter{
+		routes: map[string]node.Hash{
+			"plat-chain": node.HashFromRawOptions([]byte(`{"type":"socks","server":"7.7.7.7","server_port":1080}`)),
+		},
+	}
+
+	chain, err := ResolveProbeNodeChain(pool, router, pool, targetHash, "https://example.com")
+	if err != nil {
+		t.Fatalf("ResolveProbeNodeChain: %v", err)
+	}
+	if len(chain.Hops) != 1 || chain.Hops[0] != targetHash {
+		t.Fatalf("resolved hops = %v", chain.Hops)
+	}
+	if chain.ChainNodeHash != node.Zero {
+		t.Fatalf("chain node hash = %s, want zero", chain.ChainNodeHash.Hex())
 	}
 }

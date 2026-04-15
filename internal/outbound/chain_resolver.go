@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/Resinat/Resin/internal/node"
-	"github.com/Resinat/Resin/internal/platform"
+	"github.com/Resinat/Resin/internal/routing"
 )
 
 var (
@@ -13,19 +13,18 @@ var (
 	ErrChainTargetConflict = errors.New("chain target duplicates upstream hop")
 )
 
-type PlatformEntryLookup interface {
-	GetPlatform(id string) (*platform.Platform, bool)
+type ChainPlatformRouter interface {
+	RouteRequestByID(platformID, account, target string) (routing.RouteResult, error)
 }
 
 type SubscriptionChainLookup interface {
-	ResolveNodeChainNodeHash(hash node.Hash) (node.Hash, bool)
+	ResolveNodeChainPlatformID(hash node.Hash) (string, bool)
 }
 
 type ResolvedNodeChain struct {
 	Hops          []node.Hash
 	RawOptions    []json.RawMessage
 	TargetHash    node.Hash
-	EntryNodeHash node.Hash
 	ChainNodeHash node.Hash
 }
 
@@ -35,65 +34,58 @@ func (c ResolvedNodeChain) MultiHop() bool {
 
 func ResolveForwardNodeChain(
 	pool PoolAccessor,
-	platformLookup PlatformEntryLookup,
-	subscriptionLookup SubscriptionChainLookup,
-	platformID string,
-	targetHash node.Hash,
-) (ResolvedNodeChain, error) {
-	prefix := make([]node.Hash, 0, 2)
-	entryHash := resolvePlatformEntryNodeHash(platformLookup, platformID)
-	if entryHash != node.Zero {
-		prefix = append(prefix, entryHash)
-	}
-
-	chainHash := resolveSubscriptionChainNodeHash(subscriptionLookup, targetHash)
-	if chainHash != node.Zero {
-		prefix = append(prefix, chainHash)
-	}
-
-	return resolveNodeChain(pool, prefix, targetHash, entryHash, chainHash)
-}
-
-func ResolveProbeNodeChain(
-	pool PoolAccessor,
+	router ChainPlatformRouter,
 	subscriptionLookup SubscriptionChainLookup,
 	targetHash node.Hash,
+	target string,
 ) (ResolvedNodeChain, error) {
-	chainHash := resolveSubscriptionChainNodeHash(subscriptionLookup, targetHash)
+	chainHash := resolveSubscriptionChainHopHash(router, subscriptionLookup, targetHash, target)
 	prefix := make([]node.Hash, 0, 1)
 	if chainHash != node.Zero {
 		prefix = append(prefix, chainHash)
 	}
-	return resolveNodeChain(pool, prefix, targetHash, node.Zero, chainHash)
+	return resolveNodeChain(pool, prefix, targetHash, chainHash)
 }
 
-func resolveSubscriptionChainNodeHash(subscriptionLookup SubscriptionChainLookup, targetHash node.Hash) node.Hash {
-	if subscriptionLookup == nil || targetHash == node.Zero {
-		return node.Zero
+func ResolveProbeNodeChain(
+	pool PoolAccessor,
+	router ChainPlatformRouter,
+	subscriptionLookup SubscriptionChainLookup,
+	targetHash node.Hash,
+	target string,
+) (ResolvedNodeChain, error) {
+	chainHash := resolveSubscriptionChainHopHash(router, subscriptionLookup, targetHash, target)
+	prefix := make([]node.Hash, 0, 1)
+	if chainHash != node.Zero {
+		prefix = append(prefix, chainHash)
 	}
-	chainHash, ok := subscriptionLookup.ResolveNodeChainNodeHash(targetHash)
-	if !ok {
-		return node.Zero
-	}
-	return chainHash
+	return resolveNodeChain(pool, prefix, targetHash, chainHash)
 }
 
-func resolvePlatformEntryNodeHash(platformLookup PlatformEntryLookup, platformID string) node.Hash {
-	if platformLookup == nil || platformID == "" {
+func resolveSubscriptionChainHopHash(
+	router ChainPlatformRouter,
+	subscriptionLookup SubscriptionChainLookup,
+	targetHash node.Hash,
+	target string,
+) node.Hash {
+	if router == nil || subscriptionLookup == nil || targetHash == node.Zero || target == "" {
 		return node.Zero
 	}
-	plat, ok := platformLookup.GetPlatform(platformID)
-	if !ok || plat == nil {
+	chainPlatformID, ok := subscriptionLookup.ResolveNodeChainPlatformID(targetHash)
+	if !ok || chainPlatformID == "" {
 		return node.Zero
 	}
-	return plat.EntryNodeHash
+	result, err := router.RouteRequestByID(chainPlatformID, "", target)
+	if err != nil {
+		return node.Zero
+	}
+	return result.NodeHash
 }
 
 func resolveNodeChain(
 	pool PoolAccessor,
 	prefix []node.Hash,
 	targetHash node.Hash,
-	entryHash node.Hash,
 	chainHash node.Hash,
 ) (ResolvedNodeChain, error) {
 	if pool == nil || targetHash == node.Zero {
@@ -108,12 +100,12 @@ func resolveNodeChain(
 		if hash == node.Zero {
 			continue
 		}
-		if _, seen := seenPrefix[hash]; seen {
-			continue
-		}
 		entry, ok := pool.GetEntry(hash)
 		if !ok || entry == nil || entry.Outbound.Load() == nil {
-			return ResolvedNodeChain{}, ErrChainUnavailable
+			continue
+		}
+		if _, seen := seenPrefix[hash]; seen {
+			continue
 		}
 		seenPrefix[hash] = struct{}{}
 		hops = append(hops, hash)
@@ -132,11 +124,15 @@ func resolveNodeChain(
 	hops = append(hops, targetHash)
 	raws = append(raws, CloneRawOptions(targetEntry.RawOptions))
 
+	actualChainHash := node.Zero
+	if _, ok := seenPrefix[chainHash]; ok {
+		actualChainHash = chainHash
+	}
+
 	return ResolvedNodeChain{
 		Hops:          hops,
 		RawOptions:    raws,
 		TargetHash:    targetHash,
-		EntryNodeHash: entryHash,
-		ChainNodeHash: chainHash,
+		ChainNodeHash: actualChainHash,
 	}, nil
 }

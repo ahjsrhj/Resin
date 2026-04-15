@@ -27,7 +27,6 @@ type PlatformResponse struct {
 	StickyTTL                        string   `json:"sticky_ttl"`
 	RegexFilters                     []string `json:"regex_filters"`
 	RegionFilters                    []string `json:"region_filters"`
-	EntryNodeHash                    string   `json:"entry_node_hash"`
 	RoutableNodeCount                int      `json:"routable_node_count"`
 	ReverseProxyMissAction           string   `json:"reverse_proxy_miss_action"`
 	ReverseProxyEmptyAccountBehavior string   `json:"reverse_proxy_empty_account_behavior"`
@@ -45,7 +44,6 @@ func platformToResponse(p model.Platform) PlatformResponse {
 		StickyTTL:                        time.Duration(p.StickyTTLNs).String(),
 		RegexFilters:                     append([]string(nil), p.RegexFilters...),
 		RegionFilters:                    append([]string(nil), p.RegionFilters...),
-		EntryNodeHash:                    platform.NormalizeEntryNodeHash(p.EntryNodeHash),
 		RoutableNodeCount:                0,
 		ReverseProxyMissAction:           p.ReverseProxyMissAction,
 		ReverseProxyEmptyAccountBehavior: behavior,
@@ -72,7 +70,6 @@ type platformConfig struct {
 	StickyTTLNs                      int64
 	RegexFilters                     []string
 	RegionFilters                    []string
-	EntryNodeHash                    string
 	ReverseProxyMissAction           string
 	ReverseProxyEmptyAccountBehavior string
 	ReverseProxyFixedAccountHeader   string
@@ -100,7 +97,6 @@ func (s *ControlPlaneService) defaultPlatformConfig(name string) platformConfig 
 		StickyTTLNs:            int64(s.EnvCfg.DefaultPlatformStickyTTL),
 		RegexFilters:           append([]string(nil), s.EnvCfg.DefaultPlatformRegexFilters...),
 		RegionFilters:          append([]string(nil), s.EnvCfg.DefaultPlatformRegionFilters...),
-		EntryNodeHash:          "",
 		ReverseProxyMissAction: s.EnvCfg.DefaultPlatformReverseProxyMissAction,
 		ReverseProxyEmptyAccountBehavior: normalizePlatformEmptyAccountBehavior(
 			s.EnvCfg.DefaultPlatformReverseProxyEmptyAccountBehavior,
@@ -118,7 +114,6 @@ func platformConfigFromModel(mp model.Platform) platformConfig {
 		StickyTTLNs:                      mp.StickyTTLNs,
 		RegexFilters:                     append([]string(nil), mp.RegexFilters...),
 		RegionFilters:                    append([]string(nil), mp.RegionFilters...),
-		EntryNodeHash:                    platform.NormalizeEntryNodeHash(mp.EntryNodeHash),
 		ReverseProxyMissAction:           mp.ReverseProxyMissAction,
 		ReverseProxyEmptyAccountBehavior: normalizePlatformEmptyAccountBehavior(mp.ReverseProxyEmptyAccountBehavior),
 		ReverseProxyFixedAccountHeader:   normalizeHeaderFieldName(mp.ReverseProxyFixedAccountHeader),
@@ -133,7 +128,6 @@ func (cfg platformConfig) toModel(id string, updatedAtNs int64) model.Platform {
 		StickyTTLNs:                      cfg.StickyTTLNs,
 		RegexFilters:                     append([]string(nil), cfg.RegexFilters...),
 		RegionFilters:                    append([]string(nil), cfg.RegionFilters...),
-		EntryNodeHash:                    platform.NormalizeEntryNodeHash(cfg.EntryNodeHash),
 		ReverseProxyMissAction:           cfg.ReverseProxyMissAction,
 		ReverseProxyEmptyAccountBehavior: cfg.ReverseProxyEmptyAccountBehavior,
 		ReverseProxyFixedAccountHeader:   cfg.ReverseProxyFixedAccountHeader,
@@ -147,16 +141,11 @@ func (cfg platformConfig) toRuntime(id string) (*platform.Platform, error) {
 	if err != nil {
 		return nil, err
 	}
-	entryNodeHash, err := platform.ParseEntryNodeHash(cfg.EntryNodeHash)
-	if err != nil {
-		return nil, err
-	}
 	return platform.NewConfiguredPlatform(
 		id,
 		cfg.Name,
 		compiledRegexFilters,
 		cfg.RegionFilters,
-		entryNodeHash,
 		cfg.StickyTTLNs,
 		cfg.ReverseProxyMissAction,
 		cfg.ReverseProxyEmptyAccountBehavior,
@@ -196,10 +185,6 @@ func normalizeHeaderFieldName(raw string) string {
 	return normalized
 }
 
-func normalizePlatformEntryNodeHash(raw string) string {
-	return platform.NormalizeEntryNodeHash(raw)
-}
-
 func validatePlatformEmptyAccountConfig(cfg *platformConfig) *ServiceError {
 	if cfg == nil {
 		return invalidArg("platform config is required")
@@ -217,28 +202,6 @@ func validatePlatformEmptyAccountConfig(cfg *platformConfig) *ServiceError {
 		return invalidArg(
 			"reverse_proxy_fixed_account_header: required when reverse_proxy_empty_account_behavior is FIXED_HEADER",
 		)
-	}
-	return nil
-}
-
-func (s *ControlPlaneService) validatePlatformEntryNodeHash(raw string) *ServiceError {
-	normalized := normalizePlatformEntryNodeHash(raw)
-	if normalized == "" {
-		return nil
-	}
-	hash, err := node.ParseHex(normalized)
-	if err != nil {
-		return invalidArg("entry_node_hash: invalid node hash")
-	}
-	if s == nil || s.Pool == nil {
-		return nil
-	}
-	entry, ok := s.Pool.GetEntry(hash)
-	if !ok {
-		return invalidArg("entry_node_hash: node not found")
-	}
-	if !entry.HasOutbound() {
-		return invalidArg("entry_node_hash: node outbound not ready")
 	}
 	return nil
 }
@@ -361,7 +324,6 @@ type CreatePlatformRequest struct {
 	StickyTTL                        *string  `json:"sticky_ttl"`
 	RegexFilters                     []string `json:"regex_filters"`
 	RegionFilters                    []string `json:"region_filters"`
-	EntryNodeHash                    *string  `json:"entry_node_hash"`
 	ReverseProxyMissAction           *string  `json:"reverse_proxy_miss_action"`
 	ReverseProxyEmptyAccountBehavior *string  `json:"reverse_proxy_empty_account_behavior"`
 	ReverseProxyFixedAccountHeader   *string  `json:"reverse_proxy_fixed_account_header"`
@@ -402,9 +364,6 @@ func (s *ControlPlaneService) CreatePlatform(req CreatePlatformRequest) (*Platfo
 	if req.RegionFilters != nil {
 		cfg.RegionFilters = req.RegionFilters
 	}
-	if req.EntryNodeHash != nil {
-		cfg.EntryNodeHash = normalizePlatformEntryNodeHash(*req.EntryNodeHash)
-	}
 	if req.ReverseProxyMissAction != nil {
 		if err := setPlatformMissAction(&cfg, *req.ReverseProxyMissAction); err != nil {
 			return nil, err
@@ -424,9 +383,6 @@ func (s *ControlPlaneService) CreatePlatform(req CreatePlatformRequest) (*Platfo
 		}
 	}
 	if err := validatePlatformConfig(&cfg, true); err != nil {
-		return nil, err
-	}
-	if err := s.validatePlatformEntryNodeHash(cfg.EntryNodeHash); err != nil {
 		return nil, err
 	}
 
@@ -510,12 +466,6 @@ func (s *ControlPlaneService) UpdatePlatform(id string, patchJSON json.RawMessag
 		regionFiltersPatched = true
 		cfg.RegionFilters = filters
 	}
-	if entryNodeHash, ok, err := patch.optionalString("entry_node_hash"); err != nil {
-		return nil, err
-	} else if ok {
-		cfg.EntryNodeHash = normalizePlatformEntryNodeHash(entryNodeHash)
-	}
-
 	if ma, ok, err := patch.optionalString("reverse_proxy_miss_action"); err != nil {
 		return nil, err
 	} else if ok {
@@ -544,9 +494,6 @@ func (s *ControlPlaneService) UpdatePlatform(id string, patchJSON json.RawMessag
 		}
 	}
 	if err := validatePlatformConfig(&cfg, regionFiltersPatched); err != nil {
-		return nil, err
-	}
-	if err := s.validatePlatformEntryNodeHash(cfg.EntryNodeHash); err != nil {
 		return nil, err
 	}
 

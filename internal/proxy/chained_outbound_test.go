@@ -16,10 +16,10 @@ import (
 )
 
 type chainedRoutePool struct {
-	entries         map[node.Hash]*node.NodeEntry
-	platformsByID   map[string]*platform.Platform
-	platformsByName map[string]*platform.Platform
-	chainByTarget   map[node.Hash]node.Hash
+	entries               map[node.Hash]*node.NodeEntry
+	platformsByID         map[string]*platform.Platform
+	platformsByName       map[string]*platform.Platform
+	chainPlatformByTarget map[node.Hash]string
 }
 
 func (p *chainedRoutePool) GetEntry(hash node.Hash) (*node.NodeEntry, bool) {
@@ -45,12 +45,12 @@ func (p *chainedRoutePool) GetPlatformByName(name string) (*platform.Platform, b
 	return plat, ok
 }
 
-func (p *chainedRoutePool) ResolveNodeChainNodeHash(hash node.Hash) (node.Hash, bool) {
-	if p.chainByTarget == nil {
-		return node.Zero, false
+func (p *chainedRoutePool) ResolveNodeChainPlatformID(hash node.Hash) (string, bool) {
+	if p.chainPlatformByTarget == nil {
+		return "", false
 	}
-	chainHash, ok := p.chainByTarget[hash]
-	return chainHash, ok
+	platformID, ok := p.chainPlatformByTarget[hash]
+	return platformID, ok
 }
 
 func (p *chainedRoutePool) RangePlatforms(fn func(*platform.Platform) bool) {
@@ -89,17 +89,17 @@ func socksOutboundRaw(host string, port int) []byte {
 func buildChainedRouteEnv(t *testing.T) (*routing.Router, *chainedRoutePool, node.Hash, node.Hash) {
 	t.Helper()
 
-	entryHost, entryPort := closedTCPAddr(t)
 	targetHost, targetPort := closedTCPAddr(t)
-	entryRaw := socksOutboundRaw(entryHost, entryPort)
+	chainHost, chainPort := closedTCPAddr(t)
 	targetRaw := socksOutboundRaw(targetHost, targetPort)
+	chainRaw := socksOutboundRaw(chainHost, chainPort)
 
-	entryHash := node.HashFromRawOptions(entryRaw)
 	targetHash := node.HashFromRawOptions(targetRaw)
+	chainHash := node.HashFromRawOptions(chainRaw)
 
-	makeNode := func(hash node.Hash, raw []byte, egress string, withLatency bool) *node.NodeEntry {
+	makeNode := func(hash node.Hash, raw []byte, egress string, subID string, withLatency bool) *node.NodeEntry {
 		entry := node.NewNodeEntry(hash, raw, time.Now(), 16)
-		entry.AddSubscriptionID("sub-1")
+		entry.AddSubscriptionID(subID)
 		entry.SetEgressIP(netip.MustParseAddr(egress))
 		if withLatency {
 			entry.LatencyTable.LoadEntry("example.com", node.DomainLatencyStats{
@@ -114,35 +114,64 @@ func buildChainedRouteEnv(t *testing.T) (*routing.Router, *chainedRoutePool, nod
 
 	pool := &chainedRoutePool{
 		entries: map[node.Hash]*node.NodeEntry{
-			entryHash:  makeNode(entryHash, entryRaw, "1.1.1.1", true),
-			targetHash: makeNode(targetHash, targetRaw, "2.2.2.2", true),
+			targetHash: makeNode(targetHash, targetRaw, "2.2.2.2", "sub-target", true),
+			chainHash:  makeNode(chainHash, chainRaw, "3.3.3.3", "sub-chain", true),
 		},
-		platformsByID:   make(map[string]*platform.Platform),
-		platformsByName: make(map[string]*platform.Platform),
-		chainByTarget:   make(map[node.Hash]node.Hash),
+		platformsByID:         make(map[string]*platform.Platform),
+		platformsByName:       make(map[string]*platform.Platform),
+		chainPlatformByTarget: make(map[node.Hash]string),
 	}
 
-	plat := platform.NewConfiguredPlatform(
+	subLookup := func(subID string, hash node.Hash) (string, bool, []string, bool) {
+		switch subID {
+		case "sub-target":
+			return "TargetSub", true, []string{"target"}, true
+		case "sub-chain":
+			return "ChainSub", true, []string{"chain"}, true
+		default:
+			return "", false, nil, false
+		}
+	}
+
+	targetRegex, err := platform.CompileRegexFilters([]string{`^TargetSub/.*`})
+	if err != nil {
+		t.Fatalf("compile target regex: %v", err)
+	}
+	chainRegex, err := platform.CompileRegexFilters([]string{`^ChainSub/.*`})
+	if err != nil {
+		t.Fatalf("compile chain regex: %v", err)
+	}
+
+	targetPlat := platform.NewConfiguredPlatform(
 		"plat-1",
 		"plat",
+		targetRegex,
 		nil,
-		nil,
-		entryHash,
 		int64(time.Hour),
 		string(platform.ReverseProxyMissActionTreatAsEmpty),
 		string(platform.ReverseProxyEmptyAccountBehaviorRandom),
 		"",
 		string(platform.AllocationPolicyBalanced),
 	)
-	plat.FullRebuild(
-		pool.RangeNodes,
-		func(subID string, hash node.Hash) (string, bool, []string, bool) {
-			return "sub", true, []string{"tag"}, true
-		},
+	targetPlat.FullRebuild(pool.RangeNodes, subLookup, nil)
+	pool.platformsByID[targetPlat.ID] = targetPlat
+	pool.platformsByName[targetPlat.Name] = targetPlat
+
+	chainPlat := platform.NewConfiguredPlatform(
+		"plat-chain",
+		"chain",
+		chainRegex,
 		nil,
+		int64(time.Hour),
+		string(platform.ReverseProxyMissActionTreatAsEmpty),
+		string(platform.ReverseProxyEmptyAccountBehaviorRandom),
+		"",
+		string(platform.AllocationPolicyBalanced),
 	)
-	pool.platformsByID[plat.ID] = plat
-	pool.platformsByName[plat.Name] = plat
+	chainPlat.FullRebuild(pool.RangeNodes, subLookup, nil)
+	pool.platformsByID[chainPlat.ID] = chainPlat
+	pool.platformsByName[chainPlat.Name] = chainPlat
+	pool.chainPlatformByTarget[targetHash] = chainPlat.ID
 
 	router := routing.NewRouter(routing.RouterConfig{
 		Pool:        pool,
@@ -150,38 +179,19 @@ func buildChainedRouteEnv(t *testing.T) (*routing.Router, *chainedRoutePool, nod
 		P2CWindow:   func() time.Duration { return time.Minute },
 	})
 
-	return router, pool, entryHash, targetHash
+	return router, pool, chainHash, targetHash
 }
 
-func buildTripleHopRouteEnv(t *testing.T) (*routing.Router, *chainedRoutePool, node.Hash, node.Hash, node.Hash) {
-	t.Helper()
-
-	router, pool, entryHash, targetHash := buildChainedRouteEnv(t)
-	chainHost, chainPort := closedTCPAddr(t)
-	chainRaw := socksOutboundRaw(chainHost, chainPort)
-	chainHash := node.HashFromRawOptions(chainRaw)
-
-	chainEntry := node.NewNodeEntry(chainHash, chainRaw, time.Now(), 16)
-	chainEntry.AddSubscriptionID("sub-1")
-	chainEntry.SetEgressIP(netip.MustParseAddr("3.3.3.3"))
-	ob := testutil.NewNoopOutbound()
-	chainEntry.Outbound.Store(&ob)
-	pool.entries[chainHash] = chainEntry
-	pool.chainByTarget[targetHash] = chainHash
-
-	return router, pool, entryHash, chainHash, targetHash
-}
-
-func TestResolveRoutedOutbound_WithEntryNodeBuildsChainedOutboundAndCaches(t *testing.T) {
-	router, pool, entryHash, targetHash := buildChainedRouteEnv(t)
+func TestResolveRoutedOutbound_WithSubscriptionChainBuildsChainedOutboundAndCaches(t *testing.T) {
+	router, pool, chainHash, targetHash := buildChainedRouteEnv(t)
 	chainPool := NewChainedOutboundPool()
 	t.Cleanup(chainPool.CloseAll)
 
-	first, perr := resolveRoutedOutbound(router, pool, pool, chainPool, "plat", "", "example.com:443")
+	first, perr := resolveRoutedOutbound(router, pool, chainPool, "plat", "", "example.com:443")
 	if perr != nil {
 		t.Fatalf("resolveRoutedOutbound first: %v", perr)
 	}
-	second, perr := resolveRoutedOutbound(router, pool, pool, chainPool, "plat", "", "example.com:443")
+	second, perr := resolveRoutedOutbound(router, pool, chainPool, "plat", "", "example.com:443")
 	if perr != nil {
 		t.Fatalf("resolveRoutedOutbound second: %v", perr)
 	}
@@ -189,75 +199,56 @@ func TestResolveRoutedOutbound_WithEntryNodeBuildsChainedOutboundAndCaches(t *te
 	if first.PassiveHealth {
 		t.Fatal("expected chained route to disable passive health")
 	}
-	if first.EntryNodeHash != entryHash {
-		t.Fatalf("entry node hash = %s, want %s", first.EntryNodeHash.Hex(), entryHash.Hex())
-	}
 	if first.Route.NodeHash != targetHash {
 		t.Fatalf("target node hash = %s, want %s", first.Route.NodeHash.Hex(), targetHash.Hex())
 	}
-	if first.TransportKey != chainTransportKey(entryHash, targetHash) {
-		t.Fatalf("transport key = %+v, want %+v", first.TransportKey, chainTransportKey(entryHash, targetHash))
+	if first.ChainNodeHash != chainHash {
+		t.Fatalf("chain node hash = %s, want %s", first.ChainNodeHash.Hex(), chainHash.Hex())
+	}
+	if first.TransportKey != chainTransportKey(chainHash, targetHash) {
+		t.Fatalf("transport key = %+v, want %+v", first.TransportKey, chainTransportKey(chainHash, targetHash))
 	}
 	if first.Outbound != second.Outbound {
-		t.Fatal("expected chained outbound bundle to be reused for the same entry/target pair")
+		t.Fatal("expected chained outbound bundle to be reused for the same chain/target pair")
 	}
 }
 
-func TestResolveRoutedOutbound_WithEntryAndSubscriptionChainBuildsThreeHopOutbound(t *testing.T) {
-	router, pool, entryHash, chainHash, targetHash := buildTripleHopRouteEnv(t)
-	chainPool := NewChainedOutboundPool()
-	t.Cleanup(chainPool.CloseAll)
-
-	routed, perr := resolveRoutedOutbound(router, pool, pool, chainPool, "plat", "", "example.com:443")
-	if perr != nil {
-		t.Fatalf("resolveRoutedOutbound: %v", perr)
-	}
-
-	if routed.PassiveHealth {
-		t.Fatal("expected multi-hop route to disable passive health")
-	}
-	if routed.EntryNodeHash != entryHash {
-		t.Fatalf("entry node hash = %s, want %s", routed.EntryNodeHash.Hex(), entryHash.Hex())
-	}
-	if routed.ChainNodeHash != chainHash {
-		t.Fatalf("chain node hash = %s, want %s", routed.ChainNodeHash.Hex(), chainHash.Hex())
-	}
-	if routed.Route.NodeHash != targetHash {
-		t.Fatalf("target node hash = %s, want %s", routed.Route.NodeHash.Hex(), targetHash.Hex())
-	}
-	if routed.TransportKey != chainTransportKey(entryHash, chainHash, targetHash) {
-		t.Fatalf("transport key = %+v, want %+v", routed.TransportKey, chainTransportKey(entryHash, chainHash, targetHash))
-	}
-}
-
-func TestResolveRoutedOutbound_DeduplicatesEntryAndSubscriptionChainHop(t *testing.T) {
-	router, pool, entryHash, targetHash := buildChainedRouteEnv(t)
-	pool.chainByTarget[targetHash] = entryHash
-	chainPool := NewChainedOutboundPool()
-	t.Cleanup(chainPool.CloseAll)
-
-	routed, perr := resolveRoutedOutbound(router, pool, pool, chainPool, "plat", "", "example.com:443")
-	if perr != nil {
-		t.Fatalf("resolveRoutedOutbound: %v", perr)
-	}
-	if routed.TransportKey != chainTransportKey(entryHash, targetHash) {
-		t.Fatalf("transport key = %+v, want %+v", routed.TransportKey, chainTransportKey(entryHash, targetHash))
-	}
-}
-
-func TestResolveRoutedOutbound_RejectsTargetDuplicatingSubscriptionChainHop(t *testing.T) {
+func TestResolveRoutedOutbound_DeduplicatesSubscriptionChainHop(t *testing.T) {
 	router, pool, _, targetHash := buildChainedRouteEnv(t)
-	pool.platformsByID["plat-1"].EntryNodeHash = node.Zero
-	pool.chainByTarget[targetHash] = targetHash
+	pool.chainPlatformByTarget[targetHash] = "plat-1"
 	chainPool := NewChainedOutboundPool()
 	t.Cleanup(chainPool.CloseAll)
 
-	_, perr := resolveRoutedOutbound(router, pool, pool, chainPool, "plat", "", "example.com:443")
+	_, perr := resolveRoutedOutbound(router, pool, chainPool, "plat", "", "example.com:443")
 	if perr == nil {
 		t.Fatal("expected resolveRoutedOutbound to reject target/chain hop conflict")
 	}
 	if perr != ErrNoAvailableNodes {
 		t.Fatalf("error = %v, want %v", perr, ErrNoAvailableNodes)
+	}
+}
+
+func TestResolveRoutedOutbound_MissingSubscriptionChainFallsBackToDirectRoute(t *testing.T) {
+	router, pool, _, targetHash := buildChainedRouteEnv(t)
+	pool.chainPlatformByTarget[targetHash] = "missing-plat"
+	chainPool := NewChainedOutboundPool()
+	t.Cleanup(chainPool.CloseAll)
+
+	routed, perr := resolveRoutedOutbound(router, pool, chainPool, "plat", "", "example.com:443")
+	if perr != nil {
+		t.Fatalf("resolveRoutedOutbound: %v", perr)
+	}
+	if !routed.PassiveHealth {
+		t.Fatal("expected direct route to keep passive health enabled")
+	}
+	if routed.ChainNodeHash != node.Zero {
+		t.Fatalf("chain node hash = %s, want zero", routed.ChainNodeHash.Hex())
+	}
+	if routed.Route.NodeHash != targetHash {
+		t.Fatalf("target node hash = %s, want %s", routed.Route.NodeHash.Hex(), targetHash.Hex())
+	}
+	if routed.TransportKey != directTransportKey(targetHash) {
+		t.Fatalf("transport key = %+v, want %+v", routed.TransportKey, directTransportKey(targetHash))
 	}
 }
 

@@ -127,11 +127,11 @@ func TestSubscription_SourceTypeAndContent(t *testing.T) {
 	}
 }
 
-func TestSubscription_ChainNodeHashThreadSafe(t *testing.T) {
+func TestSubscription_ChainPlatformIDThreadSafe(t *testing.T) {
 	s := NewSubscription("id1", "sub", "url", true, false)
-	s.SetChainNodeHash("  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  ")
-	if got, want := s.ChainNodeHash(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; got != want {
-		t.Fatalf("chain node hash: got %q, want %q", got, want)
+	s.SetChainPlatformID("  11111111-1111-1111-1111-111111111111  ")
+	if got, want := s.ChainPlatformID(), "11111111-1111-1111-1111-111111111111"; got != want {
+		t.Fatalf("chain platform id: got %q, want %q", got, want)
 	}
 }
 

@@ -82,10 +82,27 @@ func (r *Router) RouteRequest(platName, account, target string) (RouteResult, er
 	if err != nil {
 		return RouteResult{}, err
 	}
+	return r.routeRequestWithPlatform(plat, account, target)
+}
 
+func (r *Router) RouteRequestByID(platformID, account, target string) (RouteResult, error) {
+	if platformID == "" {
+		return RouteResult{}, ErrPlatformNotFound
+	}
+	plat, ok := r.pool.GetPlatform(platformID)
+	if !ok {
+		return RouteResult{}, ErrPlatformNotFound
+	}
+	return r.routeRequestWithPlatform(plat, account, target)
+}
+
+func (r *Router) routeRequestWithPlatform(plat *platform.Platform, account, target string) (RouteResult, error) {
 	targetDomain := netutil.ExtractDomain(target)
 	state := r.ensurePlatformState(plat.ID)
-	var result RouteResult
+	var (
+		result RouteResult
+		err    error
+	)
 	if account == "" {
 		result, err = r.routeRandom(plat, state, targetDomain)
 	} else {
@@ -100,7 +117,6 @@ func (r *Router) RouteRequest(platName, account, target string) (RouteResult, er
 	}
 	return result, nil
 }
-
 func withPlatformContext(plat *platform.Platform, res RouteResult) RouteResult {
 	res.PlatformID = plat.ID
 	res.PlatformName = plat.Name

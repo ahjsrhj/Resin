@@ -1,2 +1,2 @@
 ALTER TABLE subscriptions
-DROP COLUMN chain_node_hash;
+-- no-op: retained for migration history compatibility

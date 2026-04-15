@@ -43,10 +43,6 @@ func (m *mockPool) GetPlatformByName(name string) (*platform.Platform, bool) {
 	return nil, false
 }
 
-func (m *mockPool) ResolveNodeChainNodeHash(hash node.Hash) (node.Hash, bool) {
-	return node.Zero, false
-}
-
 type mockHealthRecorder struct {
 	resultCalls  atomic.Int32
 	latencyCalls atomic.Int32
@@ -1022,10 +1018,6 @@ func (m *mockPlatformLookup) GetPlatformByName(name string) (*platform.Platform,
 	}
 	p, ok := m.platformNames[name]
 	return p, ok
-}
-
-func (m *mockPlatformLookup) ResolveNodeChainNodeHash(hash node.Hash) (node.Hash, bool) {
-	return node.Zero, false
 }
 
 func TestNoOpEventEmitter(t *testing.T) {

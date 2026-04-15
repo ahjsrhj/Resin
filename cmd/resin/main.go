@@ -229,6 +229,7 @@ func newTopologyRuntime(
 	onProbeConnLifecycle func(netutil.ConnLifecycleOp),
 	onNodeRemoved func(node.Hash),
 ) (*topologyRuntime, error) {
+	rt := &topologyRuntime{}
 	subManager := topology.NewSubscriptionManager()
 
 	pool := topology.NewGlobalNodePool(topology.PoolConfig{
@@ -274,7 +275,7 @@ func newTopologyRuntime(
 			ctx, cancel := context.WithTimeout(context.Background(), envCfg.ProbeTimeout)
 			defer cancel()
 
-			chain, err := outbound.ResolveProbeNodeChain(pool, pool, hash)
+			chain, err := outbound.ResolveProbeNodeChain(pool, rt.router, pool, hash, url)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -362,16 +363,15 @@ func newTopologyRuntime(
 		engine.MarkSubscriptionNode(subID, hash.Hex())
 	})
 
-	return &topologyRuntime{
-		subManager:       subManager,
-		pool:             pool,
-		probeMgr:         probeMgr,
-		scheduler:        scheduler,
-		ephemeralCleaner: ephemeralCleaner,
-		outboundMgr:      outboundMgr,
-		chainPool:        chainPool,
-		singboxBuilder:   singboxBuilder,
-	}, nil
+	rt.subManager = subManager
+	rt.pool = pool
+	rt.probeMgr = probeMgr
+	rt.scheduler = scheduler
+	rt.ephemeralCleaner = ephemeralCleaner
+	rt.outboundMgr = outboundMgr
+	rt.chainPool = chainPool
+	rt.singboxBuilder = singboxBuilder
+	return rt, nil
 }
 
 func markNodeRemovedDirty(engine *state.StateEngine, hash node.Hash, entry *node.NodeEntry) {
@@ -403,7 +403,7 @@ func bootstrapTopology(
 		sub.SetFetchConfig(ms.URL, ms.UpdateIntervalNs)
 		sub.SetSourceType(ms.SourceType)
 		sub.SetContent(ms.Content)
-		sub.SetChainNodeHash(ms.ChainNodeHash)
+		sub.SetChainPlatformID(ms.ChainPlatformID)
 		sub.SetEphemeralNodeEvictDelayNs(ms.EphemeralNodeEvictDelayNs)
 		sub.CreatedAtNs = ms.CreatedAtNs
 		sub.UpdatedAtNs = ms.UpdatedAtNs

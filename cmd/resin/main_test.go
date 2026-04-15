@@ -142,7 +142,7 @@ func TestBootstrapTopology_CreatesDefaultPlatformWhenMissing(t *testing.T) {
 	}
 }
 
-func TestBootstrapTopology_RestoresSubscriptionChainNodeHash(t *testing.T) {
+func TestBootstrapTopology_RestoresSubscriptionChainPlatformID(t *testing.T) {
 	engine, closer, err := state.PersistenceBootstrap(t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatalf("PersistenceBootstrap: %v", err)
@@ -154,7 +154,7 @@ func TestBootstrapTopology_RestoresSubscriptionChainNodeHash(t *testing.T) {
 		ID:                        "sub-chain",
 		Name:                      "ChainSub",
 		URL:                       "https://example.com/sub",
-		ChainNodeHash:             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ChainPlatformID:           "11111111-1111-1111-1111-111111111111",
 		UpdateIntervalNs:          int64(30 * time.Minute),
 		Enabled:                   true,
 		Ephemeral:                 false,
@@ -174,8 +174,8 @@ func TestBootstrapTopology_RestoresSubscriptionChainNodeHash(t *testing.T) {
 	if !ok {
 		t.Fatal("expected subscription to be restored")
 	}
-	if got, want := sub.ChainNodeHash(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; got != want {
-		t.Fatalf("restored chain_node_hash = %q, want %q", got, want)
+	if got, want := sub.ChainPlatformID(), "11111111-1111-1111-1111-111111111111"; got != want {
+		t.Fatalf("restored chain_platform_id = %q, want %q", got, want)
 	}
 }
 

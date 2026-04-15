@@ -32,7 +32,6 @@ import {
   toPlatformUpdateInput,
   type PlatformFormValues,
 } from "./formModel";
-import { PlatformEntryNodeSelect } from "./PlatformEntryNodeSelect";
 import { PlatformMonitorPanel } from "./PlatformMonitorPanel";
 
 type PlatformDetailTab = "monitor" | "config" | "ops";
@@ -74,7 +73,6 @@ export function PlatformDetailPage() {
     defaultValues: defaultPlatformFormValues,
   });
   const detailEmptyAccountBehavior = editForm.watch("reverse_proxy_empty_account_behavior");
-  const detailEntryNodeHash = editForm.watch("entry_node_hash");
 
   useEffect(() => {
     if (!platform) {
@@ -269,10 +267,6 @@ export function PlatformDetailPage() {
                   <strong>{t(allocationPolicyLabel[platform.allocation_policy])}</strong>
                 </span>
                 <span className="platform-fact">
-                  <span>{t("入口节点")}</span>
-                  <strong>{platform.entry_node_hash ? platform.entry_node_hash.slice(0, 8) : t("未指定")}</strong>
-                </span>
-                <span className="platform-fact">
                   <span>{t("未命中策略")}</span>
                   <strong>{t(missActionLabel[platform.reverse_proxy_miss_action])}</strong>
                 </span>
@@ -353,23 +347,6 @@ export function PlatformDetailPage() {
                       invalid={Boolean(editForm.formState.errors.sticky_ttl)}
                       {...editForm.register("sticky_ttl")}
                     />
-                  </div>
-
-                  <div className="field-group">
-                    <label className="field-label" htmlFor="detail-entry-node">
-                      {t("入口节点")}
-                    </label>
-                    <PlatformEntryNodeSelect
-                      id="detail-entry-node"
-                      value={detailEntryNodeHash}
-                      invalid={Boolean(editForm.formState.errors.entry_node_hash)}
-                      onChange={(value) => {
-                        editForm.setValue("entry_node_hash", value, { shouldDirty: true, shouldValidate: true });
-                      }}
-                    />
-                    {editForm.formState.errors.entry_node_hash?.message ? (
-                      <p className="field-error">{t(editForm.formState.errors.entry_node_hash.message)}</p>
-                    ) : null}
                   </div>
 
                   <div className="field-group">

@@ -27,7 +27,7 @@ type SubscriptionResponse struct {
 	SourceType              string `json:"source_type"`
 	URL                     string `json:"url"`
 	Content                 string `json:"content"`
-	ChainNodeHash           string `json:"chain_node_hash"`
+	ChainPlatformID         string `json:"chain_platform_id"`
 	UpdateInterval          string `json:"update_interval"`
 	NodeCount               int    `json:"node_count"`
 	HealthyNodeCount        int    `json:"healthy_node_count"`
@@ -72,7 +72,7 @@ func (s *ControlPlaneService) subToResponse(sub *subscription.Subscription) Subs
 		SourceType:              sub.SourceType(),
 		URL:                     sub.URL(),
 		Content:                 sub.Content(),
-		ChainNodeHash:           sub.ChainNodeHash(),
+		ChainPlatformID:         sub.ChainPlatformID(),
 		UpdateInterval:          time.Duration(sub.UpdateIntervalNs()).String(),
 		NodeCount:               nodeCount,
 		HealthyNodeCount:        healthyNodeCount,
@@ -128,7 +128,7 @@ type CreateSubscriptionRequest struct {
 	SourceType              *string `json:"source_type"`
 	URL                     *string `json:"url"`
 	Content                 *string `json:"content"`
-	ChainNodeHash           *string `json:"chain_node_hash"`
+	ChainPlatformID         *string `json:"chain_platform_id"`
 	UpdateInterval          *string `json:"update_interval"`
 	Enabled                 *bool   `json:"enabled"`
 	Ephemeral               *bool   `json:"ephemeral"`
@@ -151,28 +151,31 @@ func parseSubscriptionSourceType(raw *string) (string, *ServiceError) {
 	}
 }
 
-func normalizeSubscriptionChainNodeHash(raw string) string {
-	return strings.TrimSpace(raw)
+func normalizeSubscriptionChainPlatformID(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	parsed, err := uuid.Parse(value)
+	if err != nil {
+		return value
+	}
+	return strings.ToLower(parsed.String())
 }
 
-func (s *ControlPlaneService) validateSubscriptionChainNodeHash(raw string) *ServiceError {
-	normalized := normalizeSubscriptionChainNodeHash(raw)
+func (s *ControlPlaneService) validateSubscriptionChainPlatformID(raw string) *ServiceError {
+	normalized := normalizeSubscriptionChainPlatformID(raw)
 	if normalized == "" {
 		return nil
 	}
-	hash, err := node.ParseHex(normalized)
-	if err != nil {
-		return invalidArg("chain_node_hash: invalid node hash")
+	if _, err := uuid.Parse(normalized); err != nil {
+		return invalidArg("chain_platform_id: invalid platform id")
 	}
 	if s == nil || s.Pool == nil {
 		return nil
 	}
-	entry, ok := s.Pool.GetEntry(hash)
-	if !ok {
-		return invalidArg("chain_node_hash: node not found")
-	}
-	if !entry.HasOutbound() {
-		return invalidArg("chain_node_hash: node outbound not ready")
+	if _, ok := s.Pool.GetPlatform(normalized); !ok {
+		return invalidArg("chain_platform_id: platform not found")
 	}
 	return nil
 }
@@ -246,11 +249,11 @@ func (s *ControlPlaneService) CreateSubscription(req CreateSubscriptionRequest) 
 		}
 		ephemeralNodeEvictDelay = d
 	}
-	chainNodeHash := ""
-	if req.ChainNodeHash != nil {
-		chainNodeHash = normalizeSubscriptionChainNodeHash(*req.ChainNodeHash)
+	chainPlatformID := ""
+	if req.ChainPlatformID != nil {
+		chainPlatformID = normalizeSubscriptionChainPlatformID(*req.ChainPlatformID)
 	}
-	if err := s.validateSubscriptionChainNodeHash(chainNodeHash); err != nil {
+	if err := s.validateSubscriptionChainPlatformID(chainPlatformID); err != nil {
 		return nil, err
 	}
 
@@ -263,7 +266,7 @@ func (s *ControlPlaneService) CreateSubscription(req CreateSubscriptionRequest) 
 		SourceType:                sourceType,
 		URL:                       subURL,
 		Content:                   content,
-		ChainNodeHash:             chainNodeHash,
+		ChainPlatformID:           chainPlatformID,
 		UpdateIntervalNs:          int64(updateInterval),
 		Enabled:                   enabled,
 		Ephemeral:                 ephemeral,
@@ -279,7 +282,7 @@ func (s *ControlPlaneService) CreateSubscription(req CreateSubscriptionRequest) 
 	sub.SetFetchConfig(subURL, int64(updateInterval))
 	sub.SetSourceType(sourceType)
 	sub.SetContent(content)
-	sub.SetChainNodeHash(chainNodeHash)
+	sub.SetChainPlatformID(chainPlatformID)
 	sub.SetEphemeralNodeEvictDelayNs(int64(ephemeralNodeEvictDelay))
 	sub.CreatedAtNs = now
 	sub.UpdatedAtNs = now
@@ -356,13 +359,13 @@ func (s *ControlPlaneService) UpdateSubscription(id string, patchJSON json.RawMe
 			contentChanged = true
 		}
 	}
-	newChainNodeHash := sub.ChainNodeHash()
-	if chainNodeHash, ok, err := patch.optionalString("chain_node_hash"); err != nil {
+	newChainPlatformID := sub.ChainPlatformID()
+	if chainPlatformID, ok, err := patch.optionalString("chain_platform_id"); err != nil {
 		return nil, err
 	} else if ok {
-		newChainNodeHash = normalizeSubscriptionChainNodeHash(chainNodeHash)
+		newChainPlatformID = normalizeSubscriptionChainPlatformID(chainPlatformID)
 	}
-	if err := s.validateSubscriptionChainNodeHash(newChainNodeHash); err != nil {
+	if err := s.validateSubscriptionChainPlatformID(newChainPlatformID); err != nil {
 		return nil, err
 	}
 
@@ -410,7 +413,7 @@ func (s *ControlPlaneService) UpdateSubscription(id string, patchJSON json.RawMe
 		SourceType:                sourceType,
 		URL:                       newURL,
 		Content:                   newContent,
-		ChainNodeHash:             newChainNodeHash,
+		ChainPlatformID:           newChainPlatformID,
 		UpdateIntervalNs:          newInterval,
 		Enabled:                   newEnabled,
 		Ephemeral:                 newEphemeral,
@@ -425,7 +428,7 @@ func (s *ControlPlaneService) UpdateSubscription(id string, patchJSON json.RawMe
 	// Apply side-effects via scheduler.
 	sub.SetFetchConfig(newURL, newInterval)
 	sub.SetContent(newContent)
-	sub.SetChainNodeHash(newChainNodeHash)
+	sub.SetChainPlatformID(newChainPlatformID)
 	sub.SetEphemeral(newEphemeral)
 	sub.SetEphemeralNodeEvictDelayNs(newEphemeralNodeEvictDelay)
 	sub.UpdatedAtNs = now

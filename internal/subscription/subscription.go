@@ -112,11 +112,11 @@ type Subscription struct {
 	opMu sync.Mutex
 
 	// Mutable fields guarded by mu.
-	mu            sync.RWMutex
-	url           string
-	sourceType    string
-	content       string
-	chainNodeHash string
+	mu              sync.RWMutex
+	url             string
+	sourceType      string
+	content         string
+	chainPlatformID string
 	// updateIntervalNs is the configured subscription refresh interval.
 	updateIntervalNs int64
 	name             string
@@ -243,17 +243,17 @@ func (s *Subscription) SetContent(content string) {
 	s.mu.Unlock()
 }
 
-// ChainNodeHash returns the configured subscription chain node hash (thread-safe).
-func (s *Subscription) ChainNodeHash() string {
+// ChainPlatformID returns the configured subscription chain platform ID (thread-safe).
+func (s *Subscription) ChainPlatformID() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.chainNodeHash
+	return s.chainPlatformID
 }
 
-// SetChainNodeHash updates the configured subscription chain node hash (thread-safe).
-func (s *Subscription) SetChainNodeHash(chainNodeHash string) {
+// SetChainPlatformID updates the configured subscription chain platform ID (thread-safe).
+func (s *Subscription) SetChainPlatformID(chainPlatformID string) {
 	s.mu.Lock()
-	s.chainNodeHash = strings.TrimSpace(chainNodeHash)
+	s.chainPlatformID = strings.TrimSpace(chainPlatformID)
 	s.mu.Unlock()
 }
 

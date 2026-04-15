@@ -1,2 +1,2 @@
 ALTER TABLE platforms
-DROP COLUMN entry_node_hash;
+-- no-op: retained for migration history compatibility

@@ -28,7 +28,7 @@ import {
   refreshSubscription,
   updateSubscription,
 } from "./api";
-import { SubscriptionChainNodeSelect } from "./SubscriptionChainNodeSelect";
+import { SubscriptionChainPlatformSelect } from "./SubscriptionChainNodeSelect";
 import type { Subscription } from "./types";
 
 type EnabledFilter = "all" | "enabled" | "disabled";
@@ -44,7 +44,7 @@ const subscriptionCreateSchema = z.object({
   source_type: z.enum(["remote", "local"]),
   url: z.string(),
   content: z.string(),
-  chain_node_hash: z.string().trim().regex(/^(|[0-9a-f]{32})$/, "代理链节点格式无效"),
+  chain_platform_id: z.string().trim().regex(/^(|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/, "代理链平台格式无效"),
   update_interval: z.string().trim().min(1, "更新间隔不能为空"),
   ephemeral_node_evict_delay: z.string().trim().min(1, "临时节点驱逐延迟不能为空"),
   enabled: z.boolean(),
@@ -91,7 +91,7 @@ function subscriptionToEditForm(subscription: Subscription): SubscriptionEditFor
     source_type: subscription.source_type,
     url: subscription.url,
     content: subscription.content ?? "",
-    chain_node_hash: subscription.chain_node_hash ?? "",
+    chain_platform_id: subscription.chain_platform_id ?? "",
     update_interval: subscription.update_interval,
     ephemeral_node_evict_delay: subscription.ephemeral_node_evict_delay,
     enabled: subscription.enabled,
@@ -182,7 +182,7 @@ export function SubscriptionPage() {
       source_type: "remote",
       url: "",
       content: "",
-      chain_node_hash: "",
+      chain_platform_id: "",
       update_interval: "12h",
       ephemeral_node_evict_delay: "72h",
       enabled: true,
@@ -191,7 +191,7 @@ export function SubscriptionPage() {
   });
 
   const createEphemeral = createForm.watch("ephemeral");
-  const createChainNodeHash = createForm.watch("chain_node_hash");
+  const createChainPlatformID = createForm.watch("chain_platform_id");
   const createSourceType = createForm.watch("source_type");
 
   const editForm = useForm<SubscriptionEditForm>({
@@ -201,7 +201,7 @@ export function SubscriptionPage() {
       source_type: "remote",
       url: "",
       content: "",
-      chain_node_hash: "",
+      chain_platform_id: "",
       update_interval: "12h",
       ephemeral_node_evict_delay: "72h",
       enabled: true,
@@ -210,7 +210,7 @@ export function SubscriptionPage() {
   });
 
   const editEphemeral = editForm.watch("ephemeral");
-  const editChainNodeHash = editForm.watch("chain_node_hash");
+  const editChainPlatformID = editForm.watch("chain_platform_id");
   const editSourceType = editForm.watch("source_type");
 
   useEffect(() => {
@@ -257,7 +257,7 @@ export function SubscriptionPage() {
         source_type: "remote",
         url: "",
         content: "",
-        chain_node_hash: "",
+        chain_platform_id: "",
         update_interval: LOCAL_SOURCE_UPDATE_INTERVAL,
         ephemeral_node_evict_delay: "72h",
         enabled: true,
@@ -278,7 +278,7 @@ export function SubscriptionPage() {
 
       const payload = {
         name: formData.name.trim(),
-        chain_node_hash: formData.chain_node_hash.trim(),
+        chain_platform_id: formData.chain_platform_id.trim(),
         update_interval: normalizeSubmitUpdateInterval(formData.source_type, formData.update_interval),
         ephemeral_node_evict_delay: formData.ephemeral_node_evict_delay.trim(),
         enabled: formData.enabled,
@@ -376,11 +376,11 @@ export function SubscriptionPage() {
   });
 
   const onCreateSubmit = createForm.handleSubmit(async (values) => {
-    const chainNodeHash = values.chain_node_hash.trim();
+    const chainPlatformID = values.chain_platform_id.trim();
     const payload = {
       name: values.name.trim(),
       source_type: values.source_type,
-      chain_node_hash: chainNodeHash || undefined,
+      chain_platform_id: chainPlatformID || undefined,
       update_interval: normalizeSubmitUpdateInterval(values.source_type, values.update_interval),
       ephemeral_node_evict_delay: values.ephemeral_node_evict_delay.trim(),
       enabled: values.enabled,
@@ -784,19 +784,19 @@ export function SubscriptionPage() {
                   )}
 
                   <div className="field-group">
-                    <label className="field-label" htmlFor="edit-sub-chain-node-hash">
-                      {t("代理链节点")}
+                    <label className="field-label" htmlFor="edit-sub-chain-platform-id">
+                      {t("代理链平台")}
                     </label>
-                    <SubscriptionChainNodeSelect
-                      id="edit-sub-chain-node-hash"
-                      value={editChainNodeHash}
-                      invalid={Boolean(editForm.formState.errors.chain_node_hash)}
+                    <SubscriptionChainPlatformSelect
+                      id="edit-sub-chain-platform-id"
+                      value={editChainPlatformID}
+                      invalid={Boolean(editForm.formState.errors.chain_platform_id)}
                       onChange={(value) => {
-                        editForm.setValue("chain_node_hash", value, { shouldDirty: true, shouldValidate: true });
+                        editForm.setValue("chain_platform_id", value, { shouldDirty: true, shouldValidate: true });
                       }}
                     />
-                    {editForm.formState.errors.chain_node_hash?.message ? (
-                      <p className="field-error">{t(editForm.formState.errors.chain_node_hash.message)}</p>
+                    {editForm.formState.errors.chain_platform_id?.message ? (
+                      <p className="field-error">{t(editForm.formState.errors.chain_platform_id.message)}</p>
                     ) : null}
                   </div>
 
@@ -1012,19 +1012,19 @@ export function SubscriptionPage() {
               )}
 
               <div className="field-group">
-                <label className="field-label" htmlFor="create-sub-chain-node-hash">
-                  {t("代理链节点")}
+                <label className="field-label" htmlFor="create-sub-chain-platform-id">
+                  {t("代理链平台")}
                 </label>
-                <SubscriptionChainNodeSelect
-                  id="create-sub-chain-node-hash"
-                  value={createChainNodeHash}
-                  invalid={Boolean(createForm.formState.errors.chain_node_hash)}
+                <SubscriptionChainPlatformSelect
+                  id="create-sub-chain-platform-id"
+                  value={createChainPlatformID}
+                  invalid={Boolean(createForm.formState.errors.chain_platform_id)}
                   onChange={(value) => {
-                    createForm.setValue("chain_node_hash", value, { shouldDirty: true, shouldValidate: true });
+                    createForm.setValue("chain_platform_id", value, { shouldDirty: true, shouldValidate: true });
                   }}
                 />
-                {createForm.formState.errors.chain_node_hash?.message ? (
-                  <p className="field-error">{t(createForm.formState.errors.chain_node_hash.message)}</p>
+                {createForm.formState.errors.chain_platform_id?.message ? (
+                  <p className="field-error">{t(createForm.formState.errors.chain_platform_id.message)}</p>
                 ) : null}
               </div>
 

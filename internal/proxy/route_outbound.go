@@ -14,14 +14,12 @@ type routedOutbound struct {
 	Outbound      adapter.Outbound
 	TransportKey  outboundTransportKey
 	PassiveHealth bool
-	EntryNodeHash node.Hash
 	ChainNodeHash node.Hash
 }
 
 func resolveRoutedOutbound(
 	router *routing.Router,
 	pool outbound.PoolAccessor,
-	platformLookup PlatformLookup,
 	chainPool *ChainedOutboundPool,
 	platformName string,
 	account string,
@@ -43,10 +41,10 @@ func resolveRoutedOutbound(
 
 	chain, err := outbound.ResolveForwardNodeChain(
 		pool,
-		platformLookup,
+		router,
 		resolveSubscriptionChainLookup(pool),
-		result.PlatformID,
 		result.NodeHash,
+		target,
 	)
 	if err != nil {
 		if errors.Is(err, outbound.ErrOutboundNotReady) ||
@@ -85,7 +83,6 @@ func resolveRoutedOutbound(
 		Outbound:      chainedOutbound,
 		TransportKey:  chainTransportKey(chain.Hops...),
 		PassiveHealth: false,
-		EntryNodeHash: chain.EntryNodeHash,
 		ChainNodeHash: chain.ChainNodeHash,
 	}, nil
 }

@@ -109,10 +109,6 @@ func (r *StateRepo) UpsertPlatform(p model.Platform) error {
 	if err := platform.ValidateRegionFilters(p.RegionFilters); err != nil {
 		return err
 	}
-	p.EntryNodeHash = platform.NormalizeEntryNodeHash(p.EntryNodeHash)
-	if _, err := platform.ParseEntryNodeHash(p.EntryNodeHash); err != nil {
-		return err
-	}
 	missAction := platform.NormalizeReverseProxyMissAction(p.ReverseProxyMissAction)
 	if missAction == "" {
 		return fmt.Errorf("reverse_proxy_miss_action: invalid value %q", p.ReverseProxyMissAction)
@@ -153,22 +149,21 @@ func (r *StateRepo) UpsertPlatform(p model.Platform) error {
 	defer r.mu.Unlock()
 
 	_, err = r.db.Exec(`
-		INSERT INTO platforms (id, name, sticky_ttl_ns, regex_filters_json, region_filters_json, entry_node_hash,
+		INSERT INTO platforms (id, name, sticky_ttl_ns, regex_filters_json, region_filters_json,
 		                       reverse_proxy_miss_action, reverse_proxy_empty_account_behavior,
 		                       reverse_proxy_fixed_account_header, allocation_policy, updated_at_ns)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name                     = excluded.name,
 			sticky_ttl_ns            = excluded.sticky_ttl_ns,
 			regex_filters_json       = excluded.regex_filters_json,
 			region_filters_json      = excluded.region_filters_json,
-			entry_node_hash          = excluded.entry_node_hash,
 			reverse_proxy_miss_action = excluded.reverse_proxy_miss_action,
 			reverse_proxy_empty_account_behavior = excluded.reverse_proxy_empty_account_behavior,
 			reverse_proxy_fixed_account_header   = excluded.reverse_proxy_fixed_account_header,
 			allocation_policy        = excluded.allocation_policy,
 			updated_at_ns            = excluded.updated_at_ns
-		`, p.ID, p.Name, p.StickyTTLNs, regexFiltersJSON, regionFiltersJSON, p.EntryNodeHash,
+		`, p.ID, p.Name, p.StickyTTLNs, regexFiltersJSON, regionFiltersJSON,
 		p.ReverseProxyMissAction, p.ReverseProxyEmptyAccountBehavior, p.ReverseProxyFixedAccountHeader,
 		p.AllocationPolicy, p.UpdatedAtNs)
 	if err != nil {
@@ -223,7 +218,7 @@ func (r *StateRepo) GetPlatformName(id string) (string, error) {
 
 // GetPlatform returns one platform by ID.
 func (r *StateRepo) GetPlatform(id string) (*model.Platform, error) {
-	row := r.db.QueryRow(`SELECT id, name, sticky_ttl_ns, regex_filters_json, region_filters_json, entry_node_hash,
+	row := r.db.QueryRow(`SELECT id, name, sticky_ttl_ns, regex_filters_json, region_filters_json,
 			reverse_proxy_miss_action, reverse_proxy_empty_account_behavior,
 			reverse_proxy_fixed_account_header, allocation_policy, updated_at_ns
 			FROM platforms WHERE id = ?`, id)
@@ -231,7 +226,7 @@ func (r *StateRepo) GetPlatform(id string) (*model.Platform, error) {
 	var p model.Platform
 	var regexFiltersJSON, regionFiltersJSON string
 	if err := row.Scan(&p.ID, &p.Name, &p.StickyTTLNs, &regexFiltersJSON,
-		&regionFiltersJSON, &p.EntryNodeHash, &p.ReverseProxyMissAction, &p.ReverseProxyEmptyAccountBehavior,
+		&regionFiltersJSON, &p.ReverseProxyMissAction, &p.ReverseProxyEmptyAccountBehavior,
 		&p.ReverseProxyFixedAccountHeader, &p.AllocationPolicy, &p.UpdatedAtNs); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
@@ -253,7 +248,7 @@ func (r *StateRepo) GetPlatform(id string) (*model.Platform, error) {
 
 // ListPlatforms returns all platforms.
 func (r *StateRepo) ListPlatforms() ([]model.Platform, error) {
-	rows, err := r.db.Query("SELECT id, name, sticky_ttl_ns, regex_filters_json, region_filters_json, entry_node_hash, reverse_proxy_miss_action, reverse_proxy_empty_account_behavior, reverse_proxy_fixed_account_header, allocation_policy, updated_at_ns FROM platforms")
+	rows, err := r.db.Query("SELECT id, name, sticky_ttl_ns, regex_filters_json, region_filters_json, reverse_proxy_miss_action, reverse_proxy_empty_account_behavior, reverse_proxy_fixed_account_header, allocation_policy, updated_at_ns FROM platforms")
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +259,7 @@ func (r *StateRepo) ListPlatforms() ([]model.Platform, error) {
 		var p model.Platform
 		var regexFiltersJSON, regionFiltersJSON string
 		if err := rows.Scan(&p.ID, &p.Name, &p.StickyTTLNs, &regexFiltersJSON,
-			&regionFiltersJSON, &p.EntryNodeHash, &p.ReverseProxyMissAction, &p.ReverseProxyEmptyAccountBehavior,
+			&regionFiltersJSON, &p.ReverseProxyMissAction, &p.ReverseProxyEmptyAccountBehavior,
 			&p.ReverseProxyFixedAccountHeader, &p.AllocationPolicy, &p.UpdatedAtNs); err != nil {
 			return nil, err
 		}
@@ -304,7 +299,7 @@ func (r *StateRepo) UpsertSubscription(s model.Subscription) error {
 	defer r.mu.Unlock()
 
 	_, err := r.db.Exec(`
-		INSERT INTO subscriptions (id, name, source_type, url, content, chain_node_hash, update_interval_ns, enabled,
+		INSERT INTO subscriptions (id, name, source_type, url, content, chain_platform_id, update_interval_ns, enabled,
 		                           ephemeral, ephemeral_node_evict_delay_ns, created_at_ns, updated_at_ns)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
@@ -312,13 +307,13 @@ func (r *StateRepo) UpsertSubscription(s model.Subscription) error {
 			source_type        = excluded.source_type,
 			url                = excluded.url,
 			content            = excluded.content,
-			chain_node_hash    = excluded.chain_node_hash,
+			chain_platform_id  = excluded.chain_platform_id,
 			update_interval_ns = excluded.update_interval_ns,
 			enabled            = excluded.enabled,
 			ephemeral          = excluded.ephemeral,
 			ephemeral_node_evict_delay_ns = excluded.ephemeral_node_evict_delay_ns,
 			updated_at_ns      = excluded.updated_at_ns
-	`, s.ID, s.Name, s.SourceType, s.URL, s.Content, s.ChainNodeHash, s.UpdateIntervalNs, s.Enabled,
+	`, s.ID, s.Name, s.SourceType, s.URL, s.Content, strings.TrimSpace(s.ChainPlatformID), s.UpdateIntervalNs, s.Enabled,
 		s.Ephemeral, s.EphemeralNodeEvictDelayNs, s.CreatedAtNs, s.UpdatedAtNs)
 	return err
 }
@@ -341,7 +336,7 @@ func (r *StateRepo) DeleteSubscription(id string) error {
 
 // ListSubscriptions returns all subscriptions.
 func (r *StateRepo) ListSubscriptions() ([]model.Subscription, error) {
-	rows, err := r.db.Query(`SELECT id, name, source_type, url, content, chain_node_hash, update_interval_ns, enabled,
+	rows, err := r.db.Query(`SELECT id, name, source_type, url, content, chain_platform_id, update_interval_ns, enabled,
 		ephemeral, ephemeral_node_evict_delay_ns, created_at_ns, updated_at_ns FROM subscriptions`)
 	if err != nil {
 		return nil, err
@@ -351,7 +346,7 @@ func (r *StateRepo) ListSubscriptions() ([]model.Subscription, error) {
 	var result []model.Subscription
 	for rows.Next() {
 		var s model.Subscription
-		if err := rows.Scan(&s.ID, &s.Name, &s.SourceType, &s.URL, &s.Content, &s.ChainNodeHash, &s.UpdateIntervalNs, &s.Enabled,
+		if err := rows.Scan(&s.ID, &s.Name, &s.SourceType, &s.URL, &s.Content, &s.ChainPlatformID, &s.UpdateIntervalNs, &s.Enabled,
 			&s.Ephemeral, &s.EphemeralNodeEvictDelayNs, &s.CreatedAtNs, &s.UpdatedAtNs); err != nil {
 			return nil, err
 		}

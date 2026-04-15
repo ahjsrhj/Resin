@@ -31,7 +31,6 @@ type Platform struct {
 	// Filter configuration.
 	RegexFilters  []*regexp.Regexp
 	RegionFilters []string // lowercase ISO codes, supports negation "!xx"
-	EntryNodeHash node.Hash
 
 	// Other config fields.
 	StickyTTLNs                      int64
@@ -114,10 +113,6 @@ func (p *Platform) evaluateNode(
 	subLookup node.SubLookupFunc,
 	geoLookup GeoLookupFunc,
 ) bool {
-	if p.EntryNodeHash != node.Zero && entry.Hash == p.EntryNodeHash {
-		return false
-	}
-
 	// 0. Disabled nodes are never routable.
 	if entry.IsDisabledBySubscriptions(subLookup) {
 		return false

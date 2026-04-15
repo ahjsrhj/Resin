@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 	source_type                  TEXT NOT NULL DEFAULT 'remote',
 	url                          TEXT NOT NULL,
 	content                      TEXT NOT NULL DEFAULT '',
+	chain_platform_id            TEXT NOT NULL DEFAULT '',
 	update_interval_ns           INTEGER NOT NULL,
 	enabled                      INTEGER NOT NULL DEFAULT 1,
 	ephemeral                    INTEGER NOT NULL DEFAULT 0,

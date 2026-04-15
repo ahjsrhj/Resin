@@ -319,7 +319,7 @@ func (p *ForwardProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	defer lifecycle.finish()
 	lifecycle.setAccount(account)
 
-	routed, routeErr := resolveRoutedOutbound(p.router, p.pool, p.platLook, p.chainPool, platName, account, r.Host)
+	routed, routeErr := resolveRoutedOutbound(p.router, p.pool, p.chainPool, platName, account, r.Host)
 	if routeErr != nil {
 		lifecycle.setProxyError(routeErr)
 		lifecycle.setHTTPStatus(routeErr.HTTPCode)
@@ -409,7 +409,7 @@ func (p *ForwardProxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 	defer lifecycle.finish()
 	lifecycle.setAccount(account)
 
-	routed, routeErr := resolveRoutedOutbound(p.router, p.pool, p.platLook, p.chainPool, platName, account, target)
+	routed, routeErr := resolveRoutedOutbound(p.router, p.pool, p.chainPool, platName, account, target)
 	if routeErr != nil {
 		lifecycle.setProxyError(routeErr)
 		lifecycle.setHTTPStatus(routeErr.HTTPCode)

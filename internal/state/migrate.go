@@ -19,13 +19,14 @@ const (
 	// Keep these version markers in sync with SQL files under migrations/state/.
 	// stateLegacyBaselineVersion must remain fixed to the highest migration
 	// version covered by compatibility detection for pre-migrate databases.
-	stateVersionBaseSchema                   = 1
-	stateVersionAddEmptyAccountBehavior      = 2
-	stateVersionAddFixedAccountHeader        = 3
-	stateVersionNormalizeMissAction          = 4
-	stateVersionAddEntryNodeHash             = 5
-	stateVersionAddSubscriptionChainNodeHash = 6
-	stateLegacyBaselineVersion               = stateVersionAddFixedAccountHeader
+	stateVersionBaseSchema                    = 1
+	stateVersionAddEmptyAccountBehavior       = 2
+	stateVersionAddFixedAccountHeader         = 3
+	stateVersionNormalizeMissAction           = 4
+	stateVersionAddEntryNodeHash              = 5
+	stateVersionAddSubscriptionChainNodeHash  = 6
+	stateVersionRemoveEntryAndReplaceSubChain = 7
+	stateLegacyBaselineVersion                = stateVersionAddFixedAccountHeader
 )
 
 //go:embed migrations/state/*.sql migrations/cache/*.sql

@@ -80,11 +80,13 @@ func TestMigrateStateDB_UpgradesLegacyPlatformsColumns(t *testing.T) {
 	if ok, err := hasTableColumn(db, "platforms", "reverse_proxy_fixed_account_header"); err != nil || !ok {
 		t.Fatalf("expected migrated column reverse_proxy_fixed_account_header, ok=%v err=%v", ok, err)
 	}
-	if ok, err := hasTableColumn(db, "platforms", "entry_node_hash"); err != nil || !ok {
-		t.Fatalf("expected migrated column entry_node_hash, ok=%v err=%v", ok, err)
+	if ok, err := hasTableColumn(db, "platforms", "entry_node_hash"); err != nil {
+		t.Fatalf("inspect entry_node_hash column: %v", err)
+	} else if ok {
+		t.Fatalf("entry_node_hash should be removed after migration")
 	}
-	if ok, err := hasTableColumn(db, "subscriptions", "chain_node_hash"); err != nil || !ok {
-		t.Fatalf("expected migrated column chain_node_hash, ok=%v err=%v", ok, err)
+	if ok, err := hasTableColumn(db, "subscriptions", "chain_platform_id"); err != nil || !ok {
+		t.Fatalf("expected migrated column chain_platform_id, ok=%v err=%v", ok, err)
 	}
 }
 
@@ -145,8 +147,8 @@ func TestMigrateStateDB_LegacyBaselineAdvancesToLatest(t *testing.T) {
 	if dirty {
 		t.Fatalf("schema_migrations dirty=true")
 	}
-	if version != stateVersionAddSubscriptionChainNodeHash {
-		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddSubscriptionChainNodeHash)
+	if version != stateVersionRemoveEntryAndReplaceSubChain {
+		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionRemoveEntryAndReplaceSubChain)
 	}
 }
 
@@ -235,8 +237,8 @@ func TestMigrateStateDB_NormalizesLegacyRandomMissAction(t *testing.T) {
 	if dirty {
 		t.Fatalf("schema_migrations dirty=true")
 	}
-	if version != stateVersionAddSubscriptionChainNodeHash {
-		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddSubscriptionChainNodeHash)
+	if version != stateVersionRemoveEntryAndReplaceSubChain {
+		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionRemoveEntryAndReplaceSubChain)
 	}
 }
 
@@ -297,7 +299,6 @@ func TestStateRepo_Platforms_CRUD(t *testing.T) {
 	p := model.Platform{
 		ID: "plat-1", Name: "Default", StickyTTLNs: 1000,
 		RegexFilters: []string{}, RegionFilters: []string{},
-		EntryNodeHash:          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		ReverseProxyMissAction: "TREAT_AS_EMPTY", AllocationPolicy: "BALANCED",
 		UpdatedAtNs: now,
 	}
@@ -318,9 +319,6 @@ func TestStateRepo_Platforms_CRUD(t *testing.T) {
 			got.ReverseProxyEmptyAccountBehavior,
 			"RANDOM",
 		)
-	}
-	if got.EntryNodeHash != p.EntryNodeHash {
-		t.Fatalf("unexpected entry_node_hash: got %q want %q", got.EntryNodeHash, p.EntryNodeHash)
 	}
 
 	// List.
@@ -500,7 +498,7 @@ func TestStateRepo_Subscriptions_CRUD(t *testing.T) {
 
 	s := model.Subscription{
 		ID: "sub-1", Name: "MySub", URL: "https://example.com/sub",
-		ChainNodeHash:    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ChainPlatformID:  "11111111-1111-1111-1111-111111111111",
 		UpdateIntervalNs: int64(30 * time.Second), Enabled: true,
 		Ephemeral: false, EphemeralNodeEvictDelayNs: int64(72 * time.Hour), CreatedAtNs: now, UpdatedAtNs: now,
 	}
@@ -515,13 +513,13 @@ func TestStateRepo_Subscriptions_CRUD(t *testing.T) {
 	if len(list) != 1 || list[0].URL != "https://example.com/sub" {
 		t.Fatalf("unexpected list: %+v", list)
 	}
-	if got, want := list[0].ChainNodeHash, s.ChainNodeHash; got != want {
-		t.Fatalf("chain_node_hash: got %q, want %q", got, want)
+	if got, want := list[0].ChainPlatformID, s.ChainPlatformID; got != want {
+		t.Fatalf("chain_platform_id: got %q, want %q", got, want)
 	}
 
 	// Update.
 	s.URL = "https://example.com/sub-v2"
-	s.ChainNodeHash = ""
+	s.ChainPlatformID = ""
 	if err := repo.UpsertSubscription(s); err != nil {
 		t.Fatal(err)
 	}
@@ -529,8 +527,8 @@ func TestStateRepo_Subscriptions_CRUD(t *testing.T) {
 	if list[0].URL != "https://example.com/sub-v2" {
 		t.Fatalf("expected updated URL, got %s", list[0].URL)
 	}
-	if list[0].ChainNodeHash != "" {
-		t.Fatalf("expected cleared chain_node_hash, got %q", list[0].ChainNodeHash)
+	if list[0].ChainPlatformID != "" {
+		t.Fatalf("expected cleared chain_platform_id, got %q", list[0].ChainPlatformID)
 	}
 
 	// Delete.
@@ -549,7 +547,7 @@ func TestStateRepo_Subscription_CreatedAtNsPreserved(t *testing.T) {
 
 	s := model.Subscription{
 		ID: "sub-1", Name: "MySub", URL: "https://example.com",
-		ChainNodeHash:    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		ChainPlatformID:  "22222222-2222-2222-2222-222222222222",
 		UpdateIntervalNs: int64(30 * time.Second), Enabled: true,
 		Ephemeral: false, EphemeralNodeEvictDelayNs: int64(72 * time.Hour),
 		CreatedAtNs: originalCreatedAt, UpdatedAtNs: originalCreatedAt,
@@ -582,8 +580,8 @@ func TestStateRepo_Subscription_CreatedAtNsPreserved(t *testing.T) {
 	if list[0].UpdatedAtNs != int64(2000000) {
 		t.Fatalf("updated_at_ns should have been updated, got %d", list[0].UpdatedAtNs)
 	}
-	if list[0].ChainNodeHash != "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
-		t.Fatalf("chain_node_hash should be preserved, got %q", list[0].ChainNodeHash)
+	if list[0].ChainPlatformID != "22222222-2222-2222-2222-222222222222" {
+		t.Fatalf("chain_platform_id should be preserved, got %q", list[0].ChainPlatformID)
 	}
 }
 
@@ -597,7 +595,7 @@ func TestStateRepo_Subscription_LocalSourcePersists(t *testing.T) {
 		SourceType:                "local",
 		URL:                       "",
 		Content:                   "vmess://example",
-		ChainNodeHash:             "cccccccccccccccccccccccccccccccc",
+		ChainPlatformID:           "33333333-3333-3333-3333-333333333333",
 		UpdateIntervalNs:          int64(time.Hour),
 		Enabled:                   true,
 		Ephemeral:                 false,
@@ -622,8 +620,8 @@ func TestStateRepo_Subscription_LocalSourcePersists(t *testing.T) {
 	if list[0].Content != "vmess://example" {
 		t.Fatalf("content: got %q", list[0].Content)
 	}
-	if list[0].ChainNodeHash != "cccccccccccccccccccccccccccccccc" {
-		t.Fatalf("chain_node_hash: got %q", list[0].ChainNodeHash)
+	if list[0].ChainPlatformID != "33333333-3333-3333-3333-333333333333" {
+		t.Fatalf("chain_platform_id: got %q", list[0].ChainPlatformID)
 	}
 }
 

@@ -10,7 +10,6 @@ type Platform struct {
 	StickyTTLNs                      int64  `json:"sticky_ttl_ns"`
 	RegexFilters                     []string
 	RegionFilters                    []string
-	EntryNodeHash                    string `json:"entry_node_hash"`
 	ReverseProxyMissAction           string `json:"reverse_proxy_miss_action"`
 	ReverseProxyEmptyAccountBehavior string `json:"reverse_proxy_empty_account_behavior"`
 	ReverseProxyFixedAccountHeader   string `json:"reverse_proxy_fixed_account_header"`
@@ -25,7 +24,7 @@ type Subscription struct {
 	SourceType                string `json:"source_type"`
 	URL                       string `json:"url"`
 	Content                   string `json:"content"`
-	ChainNodeHash             string `json:"chain_node_hash"`
+	ChainPlatformID           string `json:"chain_platform_id"`
 	UpdateIntervalNs          int64  `json:"update_interval_ns"`
 	Enabled                   bool   `json:"enabled"`
 	Ephemeral                 bool   `json:"ephemeral"`

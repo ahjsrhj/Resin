@@ -547,88 +547,24 @@ func TestCreatePlatform_WithEntryNodeExcludesEntryFromRoutableView(t *testing.T)
 		},
 	}
 
-	entryHashStr := entryHash.Hex()
 	name := "entry-platform"
-	created, err := cp.CreatePlatform(CreatePlatformRequest{
-		Name:          &name,
-		EntryNodeHash: &entryHashStr,
-	})
+	created, err := cp.CreatePlatform(CreatePlatformRequest{Name: &name})
 	if err != nil {
 		t.Fatalf("CreatePlatform: %v", err)
-	}
-	if created.EntryNodeHash != entryHashStr {
-		t.Fatalf("response entry_node_hash = %q, want %q", created.EntryNodeHash, entryHashStr)
 	}
 
 	plat, ok := pool.GetPlatform(created.ID)
 	if !ok {
 		t.Fatalf("platform %s was not registered in pool", created.ID)
 	}
-	if plat.View().Contains(entryHash) {
-		t.Fatalf("entry node %s must not be routable", entryHash.Hex())
+	if !plat.View().Contains(entryHash) {
+		t.Fatalf("node %s should remain routable", entryHash.Hex())
 	}
 	if !plat.View().Contains(targetHash) {
 		t.Fatalf("target node %s should remain routable", targetHash.Hex())
 	}
-	if got := plat.View().Size(); got != 1 {
-		t.Fatalf("new platform view size = %d, want 1", got)
-	}
-}
-
-func TestCreatePlatform_RejectsMissingEntryNode(t *testing.T) {
-	dir := t.TempDir()
-	engine, closer, err := state.PersistenceBootstrap(
-		filepath.Join(dir, "state"),
-		filepath.Join(dir, "cache"),
-	)
-	if err != nil {
-		t.Fatalf("PersistenceBootstrap: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = closer.Close()
-	})
-
-	subMgr := topology.NewSubscriptionManager()
-	pool := topology.NewGlobalNodePool(topology.PoolConfig{
-		SubLookup:              subMgr.Lookup,
-		GeoLookup:              func(netip.Addr) string { return "us" },
-		MaxLatencyTableEntries: 16,
-		MaxConsecutiveFailures: func() int { return 3 },
-		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
-	})
-
-	cp := &ControlPlaneService{
-		Engine: engine,
-		Pool:   pool,
-		SubMgr: subMgr,
-		EnvCfg: &config.EnvConfig{
-			DefaultPlatformStickyTTL:              30 * time.Minute,
-			DefaultPlatformRegexFilters:           []string{},
-			DefaultPlatformRegionFilters:          []string{},
-			DefaultPlatformReverseProxyMissAction: "TREAT_AS_EMPTY",
-			DefaultPlatformAllocationPolicy:       "BALANCED",
-		},
-	}
-
-	name := "entry-platform"
-	missingHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	_, err = cp.CreatePlatform(CreatePlatformRequest{
-		Name:          &name,
-		EntryNodeHash: &missingHash,
-	})
-	if err == nil {
-		t.Fatal("expected CreatePlatform to reject missing entry node")
-	}
-
-	var svcErr *ServiceError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceError, got %T: %v", err, err)
-	}
-	if svcErr.Code != "INVALID_ARGUMENT" {
-		t.Fatalf("service error code = %q, want %q", svcErr.Code, "INVALID_ARGUMENT")
-	}
-	if !strings.Contains(svcErr.Message, "entry_node_hash") || !strings.Contains(svcErr.Message, "node not found") {
-		t.Fatalf("service error message = %q, expected missing entry-node hint", svcErr.Message)
+	if got := plat.View().Size(); got != 2 {
+		t.Fatalf("new platform view size = %d, want 2", got)
 	}
 }
 
@@ -863,7 +799,7 @@ func TestGetSubscription_HealthyNodeCount_ExcludesDisabledSubscriptionNodes(t *t
 	}
 }
 
-func TestCreateSubscription_AcceptsChainNodeHashAndPersists(t *testing.T) {
+func TestCreateSubscription_AcceptsChainPlatformIDAndPersists(t *testing.T) {
 	dir := t.TempDir()
 	engine, closer, err := state.PersistenceBootstrap(
 		filepath.Join(dir, "state"),
@@ -883,12 +819,18 @@ func TestCreateSubscription_AcceptsChainNodeHashAndPersists(t *testing.T) {
 		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
 	})
 
-	raw := []byte(`{"type":"ss","server":"1.1.1.1","port":443}`)
-	hash := node.HashFromRawOptions(raw)
-	entry := node.NewNodeEntry(hash, raw, time.Now(), 16)
-	outbound := testutil.NewNoopOutbound()
-	entry.Outbound.Store(&outbound)
-	pool.LoadNodeFromBootstrap(entry)
+	chainPlatformID := "11111111-1111-1111-1111-111111111111"
+	pool.RegisterPlatform(platform.NewConfiguredPlatform(
+		chainPlatformID,
+		"chain-platform",
+		nil,
+		nil,
+		int64(time.Hour),
+		string(platform.ReverseProxyMissActionTreatAsEmpty),
+		string(platform.ReverseProxyEmptyAccountBehaviorRandom),
+		"",
+		string(platform.AllocationPolicyBalanced),
+	))
 
 	cp := &ControlPlaneService{
 		Engine: engine,
@@ -898,25 +840,24 @@ func TestCreateSubscription_AcceptsChainNodeHashAndPersists(t *testing.T) {
 
 	name := "sub-with-chain"
 	url := "https://example.com/sub"
-	chainNodeHash := hash.Hex()
 	resp, err := cp.CreateSubscription(CreateSubscriptionRequest{
-		Name:          &name,
-		URL:           &url,
-		ChainNodeHash: &chainNodeHash,
+		Name:            &name,
+		URL:             &url,
+		ChainPlatformID: &chainPlatformID,
 	})
 	if err != nil {
 		t.Fatalf("CreateSubscription: %v", err)
 	}
-	if resp.ChainNodeHash != chainNodeHash {
-		t.Fatalf("response chain_node_hash = %q, want %q", resp.ChainNodeHash, chainNodeHash)
+	if resp.ChainPlatformID != chainPlatformID {
+		t.Fatalf("response chain_platform_id = %q, want %q", resp.ChainPlatformID, chainPlatformID)
 	}
 
 	sub := subMgr.Lookup(resp.ID)
 	if sub == nil {
 		t.Fatalf("subscription %q not registered", resp.ID)
 	}
-	if got := sub.ChainNodeHash(); got != chainNodeHash {
-		t.Fatalf("runtime chain_node_hash = %q, want %q", got, chainNodeHash)
+	if got := sub.ChainPlatformID(); got != chainPlatformID {
+		t.Fatalf("runtime chain_platform_id = %q, want %q", got, chainPlatformID)
 	}
 
 	subs, err := engine.ListSubscriptions()
@@ -926,12 +867,12 @@ func TestCreateSubscription_AcceptsChainNodeHashAndPersists(t *testing.T) {
 	if len(subs) != 1 {
 		t.Fatalf("subscriptions len = %d, want 1", len(subs))
 	}
-	if got := subs[0].ChainNodeHash; got != chainNodeHash {
-		t.Fatalf("persisted chain_node_hash = %q, want %q", got, chainNodeHash)
+	if got := subs[0].ChainPlatformID; got != chainPlatformID {
+		t.Fatalf("persisted chain_platform_id = %q, want %q", got, chainPlatformID)
 	}
 }
 
-func TestCreateSubscription_RejectsInvalidChainNodeHash(t *testing.T) {
+func TestCreateSubscription_RejectsInvalidChainPlatformID(t *testing.T) {
 	subMgr := topology.NewSubscriptionManager()
 	pool := topology.NewGlobalNodePool(topology.PoolConfig{
 		SubLookup:              subMgr.Lookup,
@@ -947,14 +888,14 @@ func TestCreateSubscription_RejectsInvalidChainNodeHash(t *testing.T) {
 
 	name := "sub-invalid-chain"
 	url := "https://example.com/sub"
-	chainNodeHash := "not-a-hash"
+	chainPlatformID := "not-a-platform-id"
 	_, err := cp.CreateSubscription(CreateSubscriptionRequest{
-		Name:          &name,
-		URL:           &url,
-		ChainNodeHash: &chainNodeHash,
+		Name:            &name,
+		URL:             &url,
+		ChainPlatformID: &chainPlatformID,
 	})
 	if err == nil {
-		t.Fatal("expected CreateSubscription to reject invalid chain_node_hash")
+		t.Fatal("expected CreateSubscription to reject invalid chain_platform_id")
 	}
 
 	var svcErr *ServiceError
@@ -964,12 +905,12 @@ func TestCreateSubscription_RejectsInvalidChainNodeHash(t *testing.T) {
 	if svcErr.Code != "INVALID_ARGUMENT" {
 		t.Fatalf("service error code = %q, want %q", svcErr.Code, "INVALID_ARGUMENT")
 	}
-	if !strings.Contains(svcErr.Message, "chain_node_hash") || !strings.Contains(svcErr.Message, "invalid node hash") {
+	if !strings.Contains(svcErr.Message, "chain_platform_id") || !strings.Contains(svcErr.Message, "invalid platform id") {
 		t.Fatalf("service error message = %q", svcErr.Message)
 	}
 }
 
-func TestCreateSubscription_RejectsChainNodeWithoutReadyOutbound(t *testing.T) {
+func TestCreateSubscription_RejectsMissingChainPlatform(t *testing.T) {
 	subMgr := topology.NewSubscriptionManager()
 	pool := topology.NewGlobalNodePool(topology.PoolConfig{
 		SubLookup:              subMgr.Lookup,
@@ -979,10 +920,6 @@ func TestCreateSubscription_RejectsChainNodeWithoutReadyOutbound(t *testing.T) {
 		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
 	})
 
-	raw := []byte(`{"type":"ss","server":"1.1.1.2","port":443}`)
-	hash := node.HashFromRawOptions(raw)
-	pool.LoadNodeFromBootstrap(node.NewNodeEntry(hash, raw, time.Now(), 16))
-
 	cp := &ControlPlaneService{
 		Pool:   pool,
 		SubMgr: subMgr,
@@ -990,14 +927,14 @@ func TestCreateSubscription_RejectsChainNodeWithoutReadyOutbound(t *testing.T) {
 
 	name := "sub-no-outbound-chain"
 	url := "https://example.com/sub"
-	chainNodeHash := hash.Hex()
+	chainPlatformID := "22222222-2222-2222-2222-222222222222"
 	_, err := cp.CreateSubscription(CreateSubscriptionRequest{
-		Name:          &name,
-		URL:           &url,
-		ChainNodeHash: &chainNodeHash,
+		Name:            &name,
+		URL:             &url,
+		ChainPlatformID: &chainPlatformID,
 	})
 	if err == nil {
-		t.Fatal("expected CreateSubscription to reject chain node without outbound")
+		t.Fatal("expected CreateSubscription to reject missing chain platform")
 	}
 
 	var svcErr *ServiceError
@@ -1007,12 +944,12 @@ func TestCreateSubscription_RejectsChainNodeWithoutReadyOutbound(t *testing.T) {
 	if svcErr.Code != "INVALID_ARGUMENT" {
 		t.Fatalf("service error code = %q, want %q", svcErr.Code, "INVALID_ARGUMENT")
 	}
-	if !strings.Contains(svcErr.Message, "chain_node_hash") || !strings.Contains(svcErr.Message, "outbound not ready") {
+	if !strings.Contains(svcErr.Message, "chain_platform_id") || !strings.Contains(svcErr.Message, "platform not found") {
 		t.Fatalf("service error message = %q", svcErr.Message)
 	}
 }
 
-func TestUpdateSubscription_UpdatesAndClearsChainNodeHash(t *testing.T) {
+func TestUpdateSubscription_UpdatesAndClearsChainPlatformID(t *testing.T) {
 	dir := t.TempDir()
 	engine, closer, err := state.PersistenceBootstrap(
 		filepath.Join(dir, "state"),
@@ -1039,12 +976,18 @@ func TestUpdateSubscription_UpdatesAndClearsChainNodeHash(t *testing.T) {
 		},
 	})
 
-	raw := []byte(`{"type":"ss","server":"1.1.1.3","port":443}`)
-	hash := node.HashFromRawOptions(raw)
-	entry := node.NewNodeEntry(hash, raw, time.Now(), 16)
-	outbound := testutil.NewNoopOutbound()
-	entry.Outbound.Store(&outbound)
-	pool.LoadNodeFromBootstrap(entry)
+	chainPlatformID := "33333333-3333-3333-3333-333333333333"
+	pool.RegisterPlatform(platform.NewConfiguredPlatform(
+		chainPlatformID,
+		"chain-platform",
+		nil,
+		nil,
+		int64(time.Hour),
+		string(platform.ReverseProxyMissActionTreatAsEmpty),
+		string(platform.ReverseProxyEmptyAccountBehaviorRandom),
+		"",
+		string(platform.AllocationPolicyBalanced),
+	))
 
 	sub := subscription.NewSubscription("sub-1", "sub", "https://example.com/sub", true, false)
 	sub.SetFetchConfig("https://example.com/sub", int64(30*time.Second))
@@ -1072,42 +1015,42 @@ func TestUpdateSubscription_UpdatesAndClearsChainNodeHash(t *testing.T) {
 		Scheduler: scheduler,
 	}
 
-	patchJSON, err := json.Marshal(map[string]any{"chain_node_hash": hash.Hex()})
+	patchJSON, err := json.Marshal(map[string]any{"chain_platform_id": chainPlatformID})
 	if err != nil {
 		t.Fatalf("marshal patch: %v", err)
 	}
 	resp, err := cp.UpdateSubscription(sub.ID, patchJSON)
 	if err != nil {
-		t.Fatalf("UpdateSubscription set chain_node_hash: %v", err)
+		t.Fatalf("UpdateSubscription set chain_platform_id: %v", err)
 	}
-	if resp.ChainNodeHash != hash.Hex() {
-		t.Fatalf("response chain_node_hash = %q, want %q", resp.ChainNodeHash, hash.Hex())
+	if resp.ChainPlatformID != chainPlatformID {
+		t.Fatalf("response chain_platform_id = %q, want %q", resp.ChainPlatformID, chainPlatformID)
 	}
-	if got := sub.ChainNodeHash(); got != hash.Hex() {
-		t.Fatalf("runtime chain_node_hash = %q, want %q", got, hash.Hex())
+	if got := sub.ChainPlatformID(); got != chainPlatformID {
+		t.Fatalf("runtime chain_platform_id = %q, want %q", got, chainPlatformID)
 	}
 
 	subs, err := engine.ListSubscriptions()
 	if err != nil {
 		t.Fatalf("ListSubscriptions: %v", err)
 	}
-	if got := subs[0].ChainNodeHash; got != hash.Hex() {
-		t.Fatalf("persisted chain_node_hash = %q, want %q", got, hash.Hex())
+	if got := subs[0].ChainPlatformID; got != chainPlatformID {
+		t.Fatalf("persisted chain_platform_id = %q, want %q", got, chainPlatformID)
 	}
 
-	clearPatchJSON, err := json.Marshal(map[string]any{"chain_node_hash": ""})
+	clearPatchJSON, err := json.Marshal(map[string]any{"chain_platform_id": ""})
 	if err != nil {
 		t.Fatalf("marshal clear patch: %v", err)
 	}
 	resp, err = cp.UpdateSubscription(sub.ID, clearPatchJSON)
 	if err != nil {
-		t.Fatalf("UpdateSubscription clear chain_node_hash: %v", err)
+		t.Fatalf("UpdateSubscription clear chain_platform_id: %v", err)
 	}
-	if resp.ChainNodeHash != "" {
-		t.Fatalf("response chain_node_hash after clear = %q, want empty", resp.ChainNodeHash)
+	if resp.ChainPlatformID != "" {
+		t.Fatalf("response chain_platform_id after clear = %q, want empty", resp.ChainPlatformID)
 	}
-	if got := sub.ChainNodeHash(); got != "" {
-		t.Fatalf("runtime chain_node_hash after clear = %q, want empty", got)
+	if got := sub.ChainPlatformID(); got != "" {
+		t.Fatalf("runtime chain_platform_id after clear = %q, want empty", got)
 	}
 }
 
@@ -1272,7 +1215,6 @@ func TestDeletePlatform_DoesNotDecodeCorruptPersistedFiltersJSON(t *testing.T) {
 		platformRow.Name,
 		nil,
 		nil,
-		node.Zero,
 		platformRow.StickyTTLNs,
 		platformRow.ReverseProxyMissAction,
 		string(platform.ReverseProxyEmptyAccountBehaviorAccountHeaderRule),
@@ -1335,7 +1277,6 @@ func TestResetPlatformToDefault_SupportsBuiltInDefaultPlatform(t *testing.T) {
 		defaultRow.Name,
 		nil,
 		nil,
-		node.Zero,
 		defaultRow.StickyTTLNs,
 		defaultRow.ReverseProxyMissAction,
 		string(platform.ReverseProxyEmptyAccountBehaviorAccountHeaderRule),
@@ -1477,7 +1418,6 @@ func TestResetPlatformToDefault_DoesNotDecodeCorruptPersistedFiltersJSON(t *test
 		platformRow.Name,
 		nil,
 		nil,
-		node.Zero,
 		platformRow.StickyTTLNs,
 		platformRow.ReverseProxyMissAction,
 		string(platform.ReverseProxyEmptyAccountBehaviorAccountHeaderRule),

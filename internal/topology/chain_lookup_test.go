@@ -22,21 +22,21 @@ func newChainLookupTestPool(t *testing.T) (*SubscriptionManager, *GlobalNodePool
 	return subMgr, pool
 }
 
-func TestGlobalNodePool_ResolveNodeChainNodeHash_PrefersEnabledEarliestSubscription(t *testing.T) {
+func TestGlobalNodePool_ResolveNodeChainPlatformID_PrefersEnabledEarliestSubscription(t *testing.T) {
 	subMgr, pool := newChainLookupTestPool(t)
 	targetHash := node.HashFromRawOptions([]byte(`{"type":"ss","server":"1.1.1.1"}`))
-	chainA := node.HashFromRawOptions([]byte(`{"type":"socks","server":"2.2.2.2"}`))
-	chainB := node.HashFromRawOptions([]byte(`{"type":"socks","server":"3.3.3.3"}`))
+	chainPlatformIDA := "11111111-1111-1111-1111-111111111111"
+	chainPlatformIDB := "22222222-2222-2222-2222-222222222222"
 
 	subA := subscription.NewSubscription("sub-a", "A", "https://example.com/a", false, false)
 	subA.CreatedAtNs = 10
-	subA.SetChainNodeHash(chainA.Hex())
+	subA.SetChainPlatformID(chainPlatformIDA)
 	subA.ManagedNodes().StoreNode(targetHash, subscription.ManagedNode{Tags: []string{"a"}})
 	subMgr.Register(subA)
 
 	subB := subscription.NewSubscription("sub-b", "B", "https://example.com/b", true, false)
 	subB.CreatedAtNs = 20
-	subB.SetChainNodeHash(chainB.Hex())
+	subB.SetChainPlatformID(chainPlatformIDB)
 	subB.ManagedNodes().StoreNode(targetHash, subscription.ManagedNode{Tags: []string{"b"}})
 	subMgr.Register(subB)
 
@@ -45,30 +45,30 @@ func TestGlobalNodePool_ResolveNodeChainNodeHash_PrefersEnabledEarliestSubscript
 	entry.AddSubscriptionID(subB.ID)
 	pool.LoadNodeFromBootstrap(entry)
 
-	got, ok := pool.ResolveNodeChainNodeHash(targetHash)
+	got, ok := pool.ResolveNodeChainPlatformID(targetHash)
 	if !ok {
-		t.Fatal("expected chain node hash to resolve")
+		t.Fatal("expected chain platform id to resolve")
 	}
-	if got != chainB {
-		t.Fatalf("resolved chain node hash = %s, want %s", got.Hex(), chainB.Hex())
+	if got != chainPlatformIDB {
+		t.Fatalf("resolved chain platform id = %q, want %q", got, chainPlatformIDB)
 	}
 }
 
-func TestGlobalNodePool_ResolveNodeChainNodeHash_FallsBackToEarliestWhenNoEnabledHolder(t *testing.T) {
+func TestGlobalNodePool_ResolveNodeChainPlatformID_FallsBackToEarliestWhenNoEnabledHolder(t *testing.T) {
 	subMgr, pool := newChainLookupTestPool(t)
 	targetHash := node.HashFromRawOptions([]byte(`{"type":"ss","server":"4.4.4.4"}`))
-	chainA := node.HashFromRawOptions([]byte(`{"type":"socks","server":"5.5.5.5"}`))
-	chainB := node.HashFromRawOptions([]byte(`{"type":"socks","server":"6.6.6.6"}`))
+	chainPlatformIDA := "33333333-3333-3333-3333-333333333333"
+	chainPlatformIDB := "44444444-4444-4444-4444-444444444444"
 
 	subA := subscription.NewSubscription("sub-a", "A", "https://example.com/a", false, false)
 	subA.CreatedAtNs = 10
-	subA.SetChainNodeHash(chainA.Hex())
+	subA.SetChainPlatformID(chainPlatformIDA)
 	subA.ManagedNodes().StoreNode(targetHash, subscription.ManagedNode{Tags: []string{"a"}})
 	subMgr.Register(subA)
 
 	subB := subscription.NewSubscription("sub-b", "B", "https://example.com/b", false, false)
 	subB.CreatedAtNs = 20
-	subB.SetChainNodeHash(chainB.Hex())
+	subB.SetChainPlatformID(chainPlatformIDB)
 	subB.ManagedNodes().StoreNode(targetHash, subscription.ManagedNode{Tags: []string{"b"}})
 	subMgr.Register(subB)
 
@@ -77,11 +77,11 @@ func TestGlobalNodePool_ResolveNodeChainNodeHash_FallsBackToEarliestWhenNoEnable
 	entry.AddSubscriptionID(subB.ID)
 	pool.LoadNodeFromBootstrap(entry)
 
-	got, ok := pool.ResolveNodeChainNodeHash(targetHash)
+	got, ok := pool.ResolveNodeChainPlatformID(targetHash)
 	if !ok {
-		t.Fatal("expected chain node hash to resolve")
+		t.Fatal("expected chain platform id to resolve")
 	}
-	if got != chainA {
-		t.Fatalf("resolved chain node hash = %s, want %s", got.Hex(), chainA.Hex())
+	if got != chainPlatformIDA {
+		t.Fatalf("resolved chain platform id = %q, want %q", got, chainPlatformIDA)
 	}
 }

@@ -11,7 +11,7 @@ const basePath = "/api/v1/subscriptions";
 type ApiSubscription = Omit<Subscription, "last_checked" | "last_updated" | "last_error"> & {
   source_type?: "remote" | "local";
   content?: string;
-  chain_node_hash?: string | null;
+  chain_platform_id?: string | null;
   last_checked?: string | null;
   last_updated?: string | null;
   last_error?: string | null;
@@ -22,7 +22,7 @@ function normalizeSubscription(raw: ApiSubscription): Subscription {
     ...raw,
     source_type: raw.source_type ?? "remote",
     content: raw.content ?? "",
-    chain_node_hash: typeof raw.chain_node_hash === "string" ? raw.chain_node_hash : "",
+    chain_platform_id: typeof raw.chain_platform_id === "string" ? raw.chain_platform_id : "",
     last_checked: raw.last_checked || "",
     last_updated: raw.last_updated || "",
     last_error: raw.last_error || "",
